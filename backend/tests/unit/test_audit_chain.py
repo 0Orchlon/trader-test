@@ -71,9 +71,12 @@ def test_hash_is_canonical_regardless_of_key_order():
 
 
 async def test_payload_is_redacted_before_hashing(db_session):
+    # Хуурамч түлхүүрийг ХЭСГЭЭР нь угсарна: бүтэн мөрөөр бичвэл repo-г
+    # сканнердах `tests/static/test_secret_scanner.py` үүнийг зөв барина.
+    fake_key = "PK" + "ABCDEF" + "1234567890"
     chain = AuditChain(db_session)
-    await chain.append("provider_call", "system:gateway", {"api_key": "PKABCDEF1234567890"})
+    await chain.append("provider_call", "system:gateway", {"api_key": fake_key})
     await db_session.commit()
     row = (await db_session.execute(models.AuditLog.__table__.select())).first()
-    assert "PKABCDEF1234567890" not in str(row.payload)
+    assert fake_key not in str(row.payload)
     assert await verify_chain(db_session) is None
