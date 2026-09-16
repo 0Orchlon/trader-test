@@ -26,6 +26,7 @@ from app import models
 from app.agents.gateway import ToolError
 from app.agents.grounding import check as check_grounding
 from app.api.attribution import EXTERNAL, position_origins
+from app.audit.chain import AuditChain
 from app.api.envelope import money_field, qty_field
 from app.api.risk_context import build as build_risk_context
 from app.approvals.queue import create_approval
@@ -218,6 +219,28 @@ async def _record_decision(
         created_at=now_utc(),
     )
     ctx.session.add(row)
+    await ctx.session.flush()
+    # Provenance нь audit_log-д БАС бичигдэнэ (T-23): аль agent, аль
+    # provider/model, ямар өгөгдөл иш татсан, Risk юу шийдсэн. Ингэснээр
+    # `app.audit.replay` нь ЗӨВХӨН логоос дарааллыг сэргээж чадна (AC-18).
+    await AuditChain(ctx.session).append(
+        "agent_decision",
+        f"agent:{ctx.agent}",
+        {
+            "decision_id": str(row.id),
+            "provider": ctx.provider_id,
+            "model": ctx.model,
+            "session_id": ctx.session_id,
+            "symbol": proposal.get("symbol"),
+            "side": proposal.get("side"),
+            "qty": proposal.get("qty"),
+            "rationale": proposal.get("rationale"),
+            "grounded_in": proposal.get("grounded_in"),
+            "grounding": grounding,
+            "risk": risk,
+            "outcome": outcome,
+        },
+    )
     await ctx.session.commit()
     if ctx.bus is not None:
         await ctx.bus.publish(
