@@ -60,6 +60,9 @@ class FakeBroker:
         self.source = source
         self.submitted: list[ValidatedOrder] = []
         self.canceled: list[str] = []
+        #: Дуудагдсан методын дараалал — «Alpaca руу 0 дуудалт» гэдгийг
+        #: submit-ээр БИШ, бүх гадаргуугаар шалгана (AC-33).
+        self.calls: list[str] = []
         self.fail_submit: Exception | None = None
         self.reachable = True
         self.stale = False
@@ -85,20 +88,25 @@ class FakeBroker:
         )
 
     async def get_account(self) -> Envelope[Account]:
+        self.calls.append("get_account")
         return self._envelope(self.account)
 
     async def get_positions(self) -> Envelope[list[Position]]:
+        self.calls.append("get_positions")
         return self._envelope(list(self.positions))
 
     async def get_open_orders(self) -> Envelope[list[BrokerOrder]]:
+        self.calls.append("get_open_orders")
         return self._envelope(list(self.open_orders))
 
     async def get_quote(self, symbol: str) -> Envelope[Quote]:
+        self.calls.append(f"get_quote:{symbol}")
         if symbol not in self.quotes:
             raise BrokerUnavailable(f"{symbol}: quote байхгүй")
         return self._envelope(self.quotes[symbol])
 
     async def submit_order(self, req: ValidatedOrder) -> BrokerOrder:
+        self.calls.append("submit_order")
         if self.fail_submit is not None:
             raise self.fail_submit
         self.submitted.append(req)
@@ -116,6 +124,7 @@ class FakeBroker:
         )
 
     async def cancel_order(self, broker_order_id: str) -> None:
+        self.calls.append("cancel_order")
         self.canceled.append(broker_order_id)
 
     async def stream_market_data(self, symbols: list[str]) -> AsyncIterator[Tick]:

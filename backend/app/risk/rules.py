@@ -141,6 +141,19 @@ def r5_pdt_day_trades(ctx, req: OrderIntent) -> Check:
     )
 
 
+def projected_value(existing_value: Decimal, notional: Decimal, increases: bool) -> Decimal:
+    """Order-ийн ДАРААХ хүлээгдэж буй exposure (LLD §8.2).
+
+    Багасгах order нь exposure-ыг НЭМЭХГҮЙ — эсрэг тохиолдолд том позицийг
+    хаах бүр `position_pct`-д унаж, wind-down-ийн хаах зам боогдоно (AC-36).
+    Эргүүлэлт нь `increases_exposure` дээр `True` тул энд НЭМЭГДЭНЭ: үр дүнг
+    хэтрүүлэн үнэлэх нь татгалзал руу хазайна, зөвшөөрөл руу биш.
+    """
+    if increases:
+        return existing_value + notional
+    return max(Decimal("0"), existing_value - notional)
+
+
 def r6_position_pct(ctx, req: OrderIntent) -> Check:
     price = reference_price(ctx, req)
     if price is None:
@@ -153,7 +166,9 @@ def r6_position_pct(ctx, req: OrderIntent) -> Check:
         )
     existing = position_for(ctx.positions, req.symbol)
     existing_value = abs(existing.market_value) if existing else Decimal("0")
-    projected = existing_value + req.qty * price
+    projected = projected_value(
+        existing_value, req.qty * price, increases_exposure(existing, req)
+    )
     allowed = ctx.account.equity * ctx.limits.max_position_pct / Decimal("100")
     return Check(
         rule="position_pct",
@@ -174,7 +189,11 @@ def r7_total_exposure_pct(ctx, req: OrderIntent) -> Check:
             limit_value=str(ctx.limits.max_total_exposure_pct),
             detail="no_quote — нийт exposure-ийг тооцох боломжгүй",
         )
-    exposure = sum((abs(p.market_value) for p in ctx.positions), Decimal("0")) + req.qty * price
+    exposure = projected_value(
+        sum((abs(p.market_value) for p in ctx.positions), Decimal("0")),
+        req.qty * price,
+        increases_exposure(position_for(ctx.positions, req.symbol), req),
+    )
     allowed = ctx.account.equity * ctx.limits.max_total_exposure_pct / Decimal("100")
     return Check(
         rule="total_exposure_pct",

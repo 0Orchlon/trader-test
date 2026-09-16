@@ -275,3 +275,78 @@ def test_evaluate_is_pure_same_input_same_output():
     assert a.decision == b.decision
     assert [c.rule for c in a.checks] == [c.rule for c in b.checks]
     assert a.validated_order.client_order_id == b.validated_order.client_order_id
+
+
+# --- T-45 (ID=670) · wind-down чиглэлийн дүрэм, ил нэрлэсэн кейсүүд (AC-35) ---
+#
+# Property тест (tests/property) нь «нэмэгдүүлэх нь ХЭЗЭЭ Ч APPROVE болохгүй»
+# гэдгийг 10 000 кейсээр барина. Эдгээр нь DoD-ийн нөгөө гурван тал: хаах
+# order ДАМЖИНА, эргүүлэх order ТАТГАЛЗАНА, хязгаар СУЛРАХГҮЙ.
+
+
+def test_wind_down_lets_a_closing_order_through():
+    result = evaluate(
+        ctx(system_state=SystemState.WINDING_DOWN, positions=[pos(qty="20", market_value="4000.00")]),
+        intent(side=OrderSide.SELL, qty=Decimal("20")),
+    )
+    assert result.decision is RiskDecision.APPROVE
+    assert result.validated_order is not None
+
+
+def test_wind_down_lets_a_partial_close_through():
+    result = evaluate(
+        ctx(system_state=SystemState.WINDING_DOWN, positions=[pos(qty="40")]),
+        intent(side=OrderSide.SELL, qty=Decimal("10")),
+    )
+    assert result.decision is RiskDecision.APPROVE
+
+
+def test_wind_down_rejects_a_reversal():
+    """Хаагаад эсрэг тийш нээх нь ШИНЭ эрсдэл — хэсэгчилсэн хаалт биш."""
+    result = evaluate(
+        ctx(system_state=SystemState.WINDING_DOWN, positions=[pos(qty="40")]),
+        intent(side=OrderSide.SELL, qty=Decimal("60")),
+    )
+    assert result.decision is RiskDecision.REJECT
+    assert "wind_down_direction" in result.reason
+
+
+def test_wind_down_rejects_a_brand_new_symbol():
+    result = evaluate(
+        ctx(system_state=SystemState.WINDING_DOWN, positions=[]),
+        intent(symbol="NVDA", side=OrderSide.BUY),
+    )
+    assert result.decision is RiskDecision.REJECT
+
+
+def test_wind_down_rejects_adding_to_a_short():
+    result = evaluate(
+        ctx(
+            system_state=SystemState.WINDING_DOWN,
+            positions=[pos(qty="-40", side=PositionSide.SHORT)],
+        ),
+        intent(side=OrderSide.SELL, qty=Decimal("10")),
+    )
+    assert result.decision is RiskDecision.REJECT
+
+
+def test_wind_down_does_not_relax_the_hard_limits():
+    """AC-36 — хаах order ч §7-ийн хязгаарыг дайрна."""
+    result = evaluate(
+        ctx(
+            system_state=SystemState.WINDING_DOWN,
+            positions=[pos(symbol="GME", qty="40", market_value="800.00")],
+        ),
+        intent(symbol="GME", side=OrderSide.SELL, qty=Decimal("40")),
+    )
+    assert result.decision is RiskDecision.REJECT
+    assert "restricted_symbol" in result.reason
+
+
+def test_halted_beats_wind_down_direction():
+    """`halted` үед хаах order ч дамжихгүй (AC-35)."""
+    result = evaluate(
+        ctx(system_state=SystemState.HALTED, positions=[pos(qty="40")]),
+        intent(side=OrderSide.SELL, qty=Decimal("40")),
+    )
+    assert result.decision is RiskDecision.REJECT

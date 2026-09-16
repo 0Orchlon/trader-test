@@ -74,7 +74,17 @@ class RiskEvaluation:
         }
 
 
-def evaluate(ctx: RiskContext, req: OrderIntent) -> RiskEvaluation:
+def evaluate(
+    ctx: RiskContext, req: OrderIntent, *, escalation_confirmed: bool = False
+) -> RiskEvaluation:
+    """`escalation_confirmed` нь ЗӨВХӨН escalate-ийн салааг нээнэ.
+
+    Operator-ийн ил баталгаажуулалт (LLD §8.4) нь `ESCALATE_TO_HUMAN`-ыг
+    гүйцэтгэх боломжтой болгоно — гэхдээ шийдвэр `ESCALATE_TO_HUMAN` ХЭВЭЭР
+    бүртгэгдэнэ: түүхэнд «энэ order хүний зөвшөөрлөөр гарсан» гэдэг ил үлдэнэ.
+    REJECT-ийн найман дүрэм энэ тугаар СУЛРАХГҮЙ — баталгаажуулалт нэг
+    хаалгыг нээдэг, бүгдийг биш.
+    """
     checks: list[Check] = []
     failed: list[Check] = []
     for rule in REJECTING_RULES:
@@ -98,7 +108,7 @@ def evaluate(ctx: RiskContext, req: OrderIntent) -> RiskEvaluation:
             checks=checks,
             evaluated_at=ctx.now,
         )
-    if escalations:
+    if escalations and not escalation_confirmed:
         return RiskEvaluation(
             decision=RiskDecision.ESCALATE_TO_HUMAN,
             reason=_reason(escalations),
@@ -106,13 +116,14 @@ def evaluate(ctx: RiskContext, req: OrderIntent) -> RiskEvaluation:
             evaluated_at=ctx.now,
         )
 
+    decision = RiskDecision.ESCALATE_TO_HUMAN if escalations else RiskDecision.APPROVE
     evaluation = RiskEvaluation(
-        decision=RiskDecision.APPROVE,
-        reason=None,
+        decision=decision,
+        reason=_reason(escalations) if escalations else None,
         checks=checks,
         evaluated_at=ctx.now,
     )
-    # APPROVE салаа — Risk-ийн харсан утгууд ЭНД хөлддөг.
+    # Гүйцэтгэх салаа — Risk-ийн харсан утгууд ЭНД хөлддөг.
     validated = ValidatedOrder(
         symbol=req.symbol,
         side=req.side,
@@ -125,8 +136,8 @@ def evaluate(ctx: RiskContext, req: OrderIntent) -> RiskEvaluation:
         risk_evaluation=evaluation.to_contract(),
     )
     return RiskEvaluation(
-        decision=RiskDecision.APPROVE,
-        reason=None,
+        decision=decision,
+        reason=evaluation.reason,
         checks=checks,
         evaluated_at=ctx.now,
         validated_order=validated,

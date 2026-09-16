@@ -40,6 +40,7 @@ class ExecutionAgent:
         approval_id: UUID | None = None,
         actor: str = "system:execution",
         idempotency_key: str | None = None,
+        request_hash: str | None = None,
     ) -> models.Order:
         existing = (
             await self.session.execute(
@@ -68,6 +69,7 @@ class ExecutionAgent:
             risk_evaluation=order.risk_evaluation,
             mode=self.mode,
             idempotency_key=idempotency_key,
+            request_hash=request_hash,
             submitted_at=now_utc(),
         )
         self.session.add(row)
