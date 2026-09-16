@@ -164,3 +164,35 @@ async def seeded_orders(db_session):
     db_session.add_all(rows)
     await db_session.commit()
     return rows
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Coverage gate (T-36, LLD §18.3).
+
+    `trylast` нь чухал: pytest-cov өөрийн `sessionfinish`-дээ хэмжилтээ
+    хаадаг тул түүний ДАРАА ажиллах ёстой. `terminal_summary` бол хэтэрхий
+    оройтсон — exit status тэр үед аль хэдийн тогтсон байдаг, gate нь
+    мессеж хэвлээд build-ийг НОГООН үлдээнэ.
+
+    `--cov`-гүй ажиллуулбал ЧИМЭЭГҮЙ алгасна: хөгжүүлэгчийн богино
+    давталтад coverage шаардахгүй. CI нь `--cov`-той дуудна.
+    """
+    plugin = session.config.pluginmanager.get_plugin("_cov")
+    cov = getattr(getattr(plugin, "cov_controller", None), "cov", None)
+    if cov is None:
+        return
+
+    from tests.coverage_gate import check
+
+    failures = check(cov)
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if not failures:
+        if reporter is not None:
+            reporter.write_line("coverage gate: ногоон (LLD §18.3)", green=True)
+        return
+    for failure in failures:
+        if reporter is not None:
+            reporter.write_line(f"coverage gate УНАВ — {failure}", red=True)
+    # Босгоос доош бол build УНАНА (T-36 DoD а).
+    session.exitstatus = 1

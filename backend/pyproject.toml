@@ -43,3 +43,7 @@ filterwarnings = ["error::DeprecationWarning:app.*"]
 [tool.coverage.run]
 branch = true
 source = ["app"]
+# SQLAlchemy-ийн async нь greenlet дээр контекст сольдог. Үүнгүйгээр
+# coverage нь route-ийн БИЕИЙГ бүхэлд нь «хүрээгүй» гэж тоолно — босго
+# худал унаж, жинхэнэ нүх нь далдлагдана.
+concurrency = ["thread", "greenlet"]
