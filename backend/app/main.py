@@ -21,7 +21,15 @@ from app.system.state import StateMachine
 API_PREFIX = "/api/v1"
 
 
-def create_app(*, engine, settings, broker, bus: EventBus | None = None) -> FastAPI:
+def create_app(
+    *, engine, settings, broker, bus: EventBus | None = None, background: bool = False
+) -> FastAPI:
+    """`background=False` нь анхдагч.
+
+    Scheduler ба WS ingestion нь prod-ийн орох цэгээс (`build()`) л асна.
+    Тест дотор давтамжит job ажиллах нь тестийг цагаас хамааралтай болгоно —
+    тэдгээр модулиуд цэвэр async функц тул тест шууд дуудна.
+    """
     audit_logging.install()
     bus = bus or EventBus()
     sessionmaker = make_sessionmaker(engine)
@@ -37,7 +45,12 @@ def create_app(*, engine, settings, broker, bus: EventBus | None = None) -> Fast
             # Дахин асаалт нь төлөвийг УНШИНА, эхлүүлэхгүй (AC-37).
             row = await machine.ensure_initialised()
             app.state.current_state = row.state
-        yield
+        stop = await _start_background(app) if background else None
+        try:
+            yield
+        finally:
+            if stop is not None:
+                await stop()
 
     app = FastAPI(
         title="PERSONAL-3 Alpaca Trading System — Operator API",
@@ -97,6 +110,36 @@ def create_app(*, engine, settings, broker, bus: EventBus | None = None) -> Fast
     return app
 
 
+async def _start_background(app: FastAPI):
+    """Scheduler + WS ingestion. Зогсоох функц буцаана."""
+    import asyncio
+
+    from app.stream.ingest import StalenessMonitor, TradeUpdateIngestor
+    from app.system.scheduler import build_scheduler
+
+    monitor = StalenessMonitor(
+        app.state.bus, stale_after_seconds=app.state.settings.STALE_AFTER_SECONDS
+    )
+    app.state.staleness = monitor
+    ingestor = TradeUpdateIngestor(
+        app.state.sessionmaker, app.state.broker, app.state.bus, monitor
+    )
+    task = asyncio.create_task(ingestor.run_forever())
+    scheduler = build_scheduler(app)
+    scheduler.start()
+    app.state.scheduler = scheduler
+
+    async def stop() -> None:
+        scheduler.shutdown(wait=False)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    return stop
+
+
 def build() -> FastAPI:  # pragma: no cover - uvicorn-ийн орох цэг
     from app.config.settings import get_settings
     from app.db import init_engine
@@ -111,4 +154,4 @@ def build() -> FastAPI:  # pragma: no cover - uvicorn-ийн орох цэг
         api_secret=settings.ALPACA_API_SECRET,
         stale_after_seconds=settings.STALE_AFTER_SECONDS,
     )
-    return create_app(engine=engine, settings=settings, broker=broker)
+    return create_app(engine=engine, settings=settings, broker=broker, background=True)
