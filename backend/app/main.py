@@ -68,6 +68,14 @@ def create_app(
 
     app.state.publish_system = publish_system
 
+    # Provider router нь process-ийн насан туршид нэг объект: hot-swap нь
+    # лавлагааг дахин оноох явдал, дахин угсралт БИШ (LLD §12.2).
+    from app.agents.router import default_router
+
+    app.state.provider_router = default_router(
+        error_threshold=settings.PROVIDER_ERROR_THRESHOLD
+    )
+
     # Broker-ийн envelope дэх `system_state` нь ХҮСЭЛТИЙН эхэнд уншсан утга —
     # нэг хариу дотор хоёр өөр төлөв харагдахгүй (LLD §4).
     if hasattr(broker, "bind_system_state"):

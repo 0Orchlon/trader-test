@@ -1,0 +1,39 @@
+# Auto-tuning-ийн whitelist ба муж (T-26, LLD §21, AC-24).
+#
+# ЭНЭ ФАЙЛ бол цорын ганц эх сурвалж. Муж өөрчлөх = энэ файлыг засах =
+# deploy = code review. API-аар засах endpoint ЗОРИУДААР БАЙХГҮЙ: UI-аас
+# муж өргөсгөх боломж нь SPEC_APPROVE-ийн хаалгыг тойрно.
+#
+# `applies_to` нь ҮРГЭЛЖ `paper` гэж эхэлнэ. `live` болох цорын ганц зам нь
+# `POST /tuning/promote` + хоёр шаттай баталгаажуулалт + walk-forward
+# нотолгоо. Ямар ч модель үүнийг хийж чадахгүй.
+version: "1.0.0"
+
+parameters:
+  - name: STOP_LOSS_PCT
+    description: Байрлал хаах алдагдлын хувь.
+    min: "1.0"
+    max: "5.0"
+    step: "0.1"
+    default: "2.5"
+
+  - name: TAKE_PROFIT_PCT
+    description: Ашиг тогтоох хувь.
+    min: "1.0"
+    max: "12.0"
+    step: "0.5"
+    default: "6.0"
+
+  - name: ENTRY_SLIPPAGE_BPS
+    description: Орох үеийн зөвшөөрөгдөх slippage (basis point).
+    min: "1"
+    max: "25"
+    step: "1"
+    default: "5"
+
+  - name: SIGNAL_LOOKBACK_BARS
+    description: Дохионы цонхны bar-ын тоо.
+    min: "10"
+    max: "120"
+    step: "5"
+    default: "50"
