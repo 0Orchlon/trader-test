@@ -1,0 +1,1867 @@
+# PERSONAL-3 · contracts · DESIGN · 2026-09-16
+#
+# Энэ файл нь ГУРВАН YAML баримтыг нэг файлд агуулна (`---`-аар тусгаарлагдсан):
+#   1) OpenAPI 3.1  — backend REST API (frontend-facing)
+#   2) AsyncAPI 3.0 — WebSocket сувгууд (frontend-facing)
+#   3) Tool Contract v1 — Agent Gateway ↔ ямар ч LLM provider (JSON Schema)
+#
+# Салгах (codegen хэрэгтэй үед):
+#   awk '/^--- #! /{n++} {print > ("contract-" n ".yaml")}' contracts.yaml
+#
+# Гэрээний хувилбар: v1.0.0. ЭНЭ ГЭРЭЭ НЬ ХАТУУ — backend, frontend, Agent
+# Gateway гурав энэ файлаас зэрэг хөгжинө. Өөрчлөлт нь semver-ээр явна
+# (`info.version` ба Tool Contract-ийн `contract_version`).
+
+--- #! 1/3 OpenAPI — Backend REST API
+openapi: 3.1.0
+info:
+  title: PERSONAL-3 Alpaca Trading System — Operator API
+  version: 1.0.0
+  description: |
+    Ганц operator-т зориулсан арилжааны системийн REST API.
+
+    **Бүх хариунд хүчинтэй гурван үл хөдлөх дүрэм:**
+    1. Мөнгөн утга бүр **тэмдэгт мөр** хэлбэрийн fixed-point decimal
+       (`"10234.56"`). Float ХЭЗЭЭ Ч биш (AC-25).
+    2. Timestamp бүр UTC, RFC 3339, `Z` төгсгөлтэй (AC-26).
+    3. Өгөгдөлтэй хариу бүр `source` талбартай ба нэг хариу дотор
+       ХОЛИМОГ `source` байхыг хориглоно (AC-20, AC-21).
+
+    **Аюулгүйн гэрээ:** энэ API-д Alpaca руу order илгээх ЦОРЫН ГАНЦ зам нь
+    `POST /orders/manual` ба approval queue-ийн `approve` хоёр. Хоёул дотооддоо
+    Risk Agent → Execution модулиар дамжина. LLM нь энэ API-д огт хүрэхгүй —
+    LLM зөвхөн Tool Contract (энэ файлын 3-р баримт) руу ханддаг.
+servers:
+  - url: http://localhost:8000/api/v1
+    description: DEV (paper)
+  - url: https://{host}/api/v1
+    description: UAT / Prod
+    variables:
+      host:
+        default: trader.internal
+
+tags:
+  - name: read
+    description: Alpaca-ийн бодит байдлыг уншина (тооцоолол нэмэхгүй)
+  - name: orders
+    description: Order-ийн амьдралын мөчлөг
+  - name: approvals
+    description: Босгоос дээш order-ийн хүний зөвшөөрөл
+  - name: system
+    description: Төлөвийн машин, kill switch, эрүүл мэнд
+  - name: agents
+    description: Agent-ийн шийдвэр, provider-ийн удирдлага
+  - name: tuning
+    description: Хязгаартай auto-tuning
+
+security:
+  - operatorSession: []
+
+paths:
+
+  /health:
+    get:
+      tags: [system]
+      summary: Liveness / readiness + Alpaca холболтын төлөв
+      security: []
+      responses:
+        "200":
+          description: Эрүүл. `degraded` байж болно — статус кодоор биш, биеэр нь заана.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /account:
+    get:
+      tags: [read]
+      summary: Дансны хормын хувилбар (Alpaca-ийн буцаасан утга, өөрчлөлтгүй)
+      description: |
+        AC-1: талбар бүр Alpaca REST-ийн хариунаас ШУУД гарна. Backend нь
+        equity, buying power зэргийг локалаар ХЭЗЭЭ Ч дахин тооцохгүй.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountEnvelope"
+        "503":
+          $ref: "#/components/responses/BrokerUnavailable"
+
+  /positions:
+    get:
+      tags: [read]
+      summary: Нээлттэй позицууд (origin-той)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PositionsEnvelope"
+        "503":
+          $ref: "#/components/responses/BrokerUnavailable"
+
+  /orders:
+    get:
+      tags: [read, orders]
+      summary: Order-ийн түүх
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, closed, all]
+            default: open
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: origin
+          in: query
+          schema:
+            $ref: "#/components/schemas/Origin"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrdersEnvelope"
+
+  /orders/manual:
+    post:
+      tags: [orders]
+      summary: Operator-ийн гараар илгээх order (FR-12, AC-31…AC-33)
+      description: |
+        Agent-ийн order-той ЯГ ИЖИЛ зам: Risk Agent → Execution → Alpaca.
+        Тусдаа, хаалтгүй зам БАЙХГҮЙ.
+
+        **Төлөвийн хараат байдал (AC-33):**
+        - `halted`        → 409 `system_halted`, Alpaca руу 0 дуудалт.
+        - `winding_down`  → зөвхөн эрсдэл БАГАСГАХ order; нэмэгдүүлэх нь
+                            422 `winding_down_increase_blocked`.
+        - `active`        → Risk-ийн ердийн шалгалт.
+
+        **Хоёр шаттай баталгаажуулалт:** Risk `ESCALATE_TO_HUMAN` буцаавал
+        (жишээ нь notional > `MAX_ORDER_NOTIONAL`) backend нь 409 +
+        `confirmation` объект буцаана. Дуудагч ЯГ ижил биеийг
+        `confirmation_token`-той дахин илгээнэ. Approval queue-д мөр
+        ҮҮСГЭХГҮЙ — operator өөрөө шууд энд байна (спек A-8).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManualOrderRequest"
+      responses:
+        "202":
+          description: Risk дамжсан, Execution-д хүлээн авсан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderAccepted"
+        "409":
+          description: |
+            Баталгаажуулалт шаардлагатай (`confirmation_required`), эсвэл
+            систем `halted` (`system_halted`), эсвэл `Idempotency-Key`
+            давхардсан боловч бие өөр (`idempotency_conflict`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: Risk Agent татгалзав (`risk_rejected`) — шалтгаан биед
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /orders/{orderId}/cancel:
+    post:
+      tags: [orders]
+      summary: Нээлттэй order-ыг цуцлах (хүний үйлдэл)
+      description: |
+        Цуцлалт нь эрсдэл БАГАСГАХ үйлдэл тул `winding_down` үед
+        зөвшөөрөгдөнө. `halted` үед МӨН зөвшөөрөгдөнө — kill switch нь
+        ШИНЭ order илгээхийг зогсоодог, байгаа order-ыг цуцлахыг биш
+        (спек A-2).
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "202":
+          description: Цуцлах хүсэлт Alpaca руу илгээгдэв
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /attribution:
+    get:
+      tags: [read]
+      summary: «Хэн юунд арилжаа хийж байна» (FR-11, AC-30)
+      description: |
+        Гаралт нь `orders` / `positions`-ийн БОДИТ мөрөөс угсарна. Тусдаа
+        тооцоолсон кэш БАЙХГҮЙ — тиймээс энд гарсан symbol бүр дор хаяж
+        нэг мөрөнд буцаж холбогдоно.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributionEnvelope"
+
+  /approvals:
+    get:
+      tags: [approvals]
+      summary: Зөвшөөрөл хүлээж буй саналууд
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, expired, all]
+            default: pending
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalsEnvelope"
+
+  /approvals/{approvalId}/approve:
+    post:
+      tags: [approvals]
+      summary: Хүлээгдэж буй саналыг зөвшөөрөх
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version]
+              properties:
+                expected_version:
+                  type: integer
+                  description: |
+                    Optimistic lock. `GET /approvals`-аас авсан `version`.
+                    Зөрвөл 409 — TTL дуусаад `expired` болсон мөрийг
+                    зөвшөөрөх боломжгүй (AC-6).
+                note:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "202":
+          description: Зөвшөөрөгдөв, Execution-д дамжив
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderAccepted"
+        "409":
+          description: Мөр аль хэдийн шийдэгдсэн / `expired` / версийн зөрүү
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /approvals/{approvalId}/reject:
+    post:
+      tags: [approvals]
+      summary: Хүлээгдэж буй саналыг татгалзах (буцаах боломжгүй)
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version, reason]
+              properties:
+                expected_version:
+                  type: integer
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+      responses:
+        "200":
+          description: Татгалзав. Энэ санал ХЭЗЭЭ Ч илгээгдэхгүй.
+        "409":
+          description: Мөр аль хэдийн шийдэгдсэн эсвэл версийн зөрүү
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /agent-decisions:
+    get:
+      tags: [agents]
+      summary: Agent-ийн шийдвэрийн лог (шүүлттэй)
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+            enum: [research, auto_tuning]
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: outcome
+          in: query
+          schema:
+            $ref: "#/components/schemas/RiskDecision"
+        - name: provider
+          in: query
+          schema:
+            type: string
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDecisionsEnvelope"
+
+  /agent-decisions/{decisionId}:
+    get:
+      tags: [agents]
+      summary: Нэг шийдвэр — ТҮҮХИЙ tool call payload-той хамт (AC-7, AC-8)
+      description: |
+        `tool_calls[].request` / `.response` нь Alpaca-аас ирсэн байдлаараа,
+        redaction-аас өөр ямар ч засваргүй. Энэ нь «AI яагаад ингэж хэлсэн
+        бэ» гэдгийн эх сурвалж — дүгнэлт биш, өгөгдөл.
+      parameters:
+        - name: decisionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDecisionDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /providers:
+    get:
+      tags: [agents]
+      summary: Тохируулагдсан LLM provider-ууд ба role тус бүрийн идэвхтэй нь
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvidersEnvelope"
+
+  /providers/{role}/switch:
+    post:
+      tags: [agents]
+      summary: Role-ийн provider-ыг ажиллаж байхад нь солих (FR-8, AC-10)
+      description: |
+        Restart БАЙХГҮЙ. Нислэг дунд байгаа tool call-ууд хуучин provider-оор
+        дуусч, ХУУЧНААР нь бүртгэгдэнэ; солилтоос ХОЙШ эхэлсэн session нь
+        шинэ provider-т онооно. v1-д `role` = `research` л боломжтой
+        (спек A-3: бусад agent LLM биш).
+      parameters:
+        - name: role
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [research]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id]
+              properties:
+                provider_id:
+                  type: string
+                  description: "`GET /providers`-ийн `id` (жишээ: `claude-mcp`, `openai-fc`)"
+      responses:
+        "200":
+          description: Солигдов
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSwitchResult"
+        "422":
+          description: Тохируулагдаагүй эсвэл эрүүл мэндийн шалгалт унасан provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /tuning/parameters:
+    get:
+      tags: [tuning]
+      summary: Whitelist параметр, тэдгээрийн муж, одоогийн утга, түүх
+      description: |
+        Энэ API-д whitelist эсвэл bounds-ыг ӨӨРЧЛӨХ endpoint ЗОРИУДААР
+        БАЙХГҮЙ (T-26, AC-24). Муж нь config-оос — deploy-ээр л солигдоно.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TuningEnvelope"
+
+  /tuning/promote:
+    post:
+      tags: [tuning]
+      summary: Paper-т шалгагдсан параметрийн багцыг live рүү дэвшүүлэх (AC-23)
+      description: Хоёр шаттай баталгаажуулалт заавал (409 → `confirmation_token`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tuning_history_ids]
+              properties:
+                tuning_history_ids:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    format: uuid
+                confirmation_token:
+                  type: string
+      responses:
+        "200":
+          description: Дэвшүүлэв. `tuning_history`-д `approved_by=operator`.
+        "409":
+          description: Баталгаажуулалт шаардлагатай, эсвэл walk-forward нотолгоо дутуу
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /system/state:
+    get:
+      tags: [system]
+      summary: Арилжааны төлөвийн машины одоогийн байдал (FR-13)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStateEnvelope"
+
+  /kill-switch:
+    post:
+      tags: [system]
+      summary: ЗОГСОО — шинэ order илгээхийг ТЭР ДОР НЬ зогсоох (FR-7, AC-14)
+      description: |
+        Төлөв → `halted`, 1 секунд дотор. Байгаа позицыг АВТОМАТААР ХААХГҮЙ
+        (спек A-2). Идемпотент: аль хэдийн `halted` бол 200 буцаана.
+        Энэ дуудалт баталгаажуулалт ШААРДАХГҮЙ — яаралтай хаалтын замд
+        саад тавихгүй.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        "200":
+          description: Зогссон
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStateEnvelope"
+
+  /system/wind-down:
+    post:
+      tags: [system]
+      summary: УНТРААХ БЭЛТГЭЛ — эхлээд хаах цонх, дараа нь зогсох (FR-13, AC-34)
+      description: |
+        Төлөв → `winding_down`, 1 секунд дотор, `system` WS сувгаар түгээнэ.
+        `wind_down_deadline = now + WIND_DOWN_GRACE` (хуанлийн цагаар).
+        Grace дуусахад автоматаар `halted` (AC-36).
+
+        Энэ үед: эрсдэл нэмэгдүүлэх бүх order татгалзана; хаах / багасгах
+        order дамжина. Позиц АВТОМАТААР хаагдахгүй (спек A-7) — agent ба
+        operator-т хаах БОЛОМЖ өгч байгаа, албадан зарахгүй.
+      responses:
+        "200":
+          description: Wind-down эхлэв
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStateEnvelope"
+        "409":
+          description: Аль хэдийн `halted` — wind-down утгагүй
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /system/activate:
+    post:
+      tags: [system]
+      summary: ИДЭВХЖҮҮЛ — `ACTIVE` руу буцах ЦОРЫН ГАНЦ зам (AC-37)
+      description: |
+        Хоёр шаттай баталгаажуулалт ЗААВАЛ. Түүнчлэн backend нь circuit
+        breaker-ийн бүх метрикийг ДАХИН ҮНЭЛНЭ — аль нэг нь босгоосоо дээр
+        хэвээр бол 409, аль метрик болохыг нэрлэж буцаана. Энэ нь
+        «цэвэрлэсэн» гэсэн туг БИШ, БОДИТ хэмжилт — тугийг гараар асаах
+        замаар тойрох боломжгүй.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirmation_token:
+                  type: string
+                note:
+                  type: string
+                  maxLength: 500
+      responses:
+        "200":
+          description: Идэвхжив
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStateEnvelope"
+        "409":
+          description: |
+            `confirmation_required` — token дутуу; эсвэл
+            `breaker_still_tripped` — метрик нэрлэгдэнэ; эсвэл
+            `already_active`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+components:
+
+  securitySchemes:
+    operatorSession:
+      type: apiKey
+      in: cookie
+      name: session
+      description: |
+        Ганц operator-ийн session cookie (HttpOnly, Secure, SameSite=Strict).
+        Олон хэрэглэгчийн role model v1-д БАЙХГҮЙ (спек A-6).
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: |
+        Клиент үүсгэнэ. Энэ утга нь `client_order_id`-ийн үндэс болно.
+        Ижил key + ижил бие = ижил хариу, давхар order БАЙХГҮЙ.
+        Ижил key + өөр бие = 409 `idempotency_conflict`.
+
+  responses:
+    NotFound:
+      description: Олдсонгүй
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    BrokerUnavailable:
+      description: |
+        Alpaca хүрэхгүй байна. Систем таамаглахгүй — хуучин утгыг live мэт
+        буцаахгүй. Frontend үүнийг «stale» banner болгоно.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+
+    Money:
+      type: string
+      pattern: '^-?[0-9]+\.[0-9]{2}$'
+      description: Fixed-point decimal тэмдэгт мөр. Float ХЭЗЭЭ Ч биш (AC-25).
+      examples: ["10234.56", "-42.00"]
+
+    Quantity:
+      type: string
+      pattern: '^-?[0-9]+(\.[0-9]{1,9})?$'
+      description: Ширхэг. Crypto-д бутархай байж болох тул decimal тэмдэгт мөр.
+
+    Utc:
+      type: string
+      format: date-time
+      pattern: 'Z$'
+      description: RFC 3339, ЗААВАЛ UTC (`Z`). Локал бүс хориотой (AC-26).
+
+    Source:
+      type: string
+      enum: [alpaca_live, alpaca_paper, backtest]
+      description: |
+        Энэ хариун дахь БҮХ өгөгдлийн гарал. Нэг хариу дотор холимог утга
+        БАЙХГҮЙ — холих шаардлагатай бол тусдаа хүсэлт (AC-20, AC-21).
+
+    SystemState:
+      type: string
+      enum: [active, winding_down, halted]
+
+    Origin:
+      type: string
+      enum: [research_agent, auto_tuning, manual_operator, external]
+      description: |
+        Order / позицийн гарал үүсэл (AC-29). `external` = локал `orders`-д
+        таарах бичлэг ОЛДООГҮЙ (Alpaca UI-аас нээсэн г.м.). ХЭЗЭЭ Ч
+        таамаглахгүй — таарахгүй бол `external`.
+
+    RiskDecision:
+      type: string
+      enum: [APPROVE, REJECT, ESCALATE_TO_HUMAN]
+
+    OrderSide:
+      type: string
+      enum: [buy, sell]
+
+    OrderType:
+      type: string
+      enum: [market, limit, stop, stop_limit, bracket]
+
+    TimeInForce:
+      type: string
+      enum: [day, gtc, ioc, fok]
+
+    Envelope:
+      type: object
+      required: [source, as_of, stale, system_state]
+      properties:
+        source:
+          $ref: "#/components/schemas/Source"
+        as_of:
+          $ref: "#/components/schemas/Utc"
+        stale:
+          type: boolean
+          default: false
+          description: |
+            Өгөгдөл `STALE_AFTER_SECONDS`-оос хуучин. Талбарыг ОРХИХГҮЙ —
+            ил `false` бичнэ (хавсралт 10 §2.4: «байхгүй» нь таамаглах цонх).
+        system_state:
+          $ref: "#/components/schemas/SystemState"
+
+    Health:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [status, broker, database, redis, providers]
+          properties:
+            status:
+              type: string
+              enum: [ok, degraded, down]
+            broker:
+              $ref: "#/components/schemas/Dependency"
+            database:
+              $ref: "#/components/schemas/Dependency"
+            redis:
+              $ref: "#/components/schemas/Dependency"
+            providers:
+              type: array
+              items:
+                $ref: "#/components/schemas/Dependency"
+
+    Dependency:
+      type: object
+      required: [name, reachable]
+      properties:
+        name:
+          type: string
+        reachable:
+          type: boolean
+        last_ok_at:
+          $ref: "#/components/schemas/Utc"
+        detail:
+          type: string
+
+    Account:
+      type: object
+      required: [account_id, equity, cash, buying_power, pattern_day_trader, day_trade_count]
+      properties:
+        account_id:
+          type: string
+        equity:
+          $ref: "#/components/schemas/Money"
+        cash:
+          $ref: "#/components/schemas/Money"
+        buying_power:
+          $ref: "#/components/schemas/Money"
+        last_equity:
+          $ref: "#/components/schemas/Money"
+        pattern_day_trader:
+          type: boolean
+        day_trade_count:
+          type: integer
+        trading_blocked:
+          type: boolean
+
+    AccountEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [account]
+          properties:
+            account:
+              $ref: "#/components/schemas/Account"
+
+    Position:
+      type: object
+      required: [symbol, qty, side, avg_entry_price, market_value, unrealized_pl, origin]
+      properties:
+        symbol:
+          type: string
+        qty:
+          $ref: "#/components/schemas/Quantity"
+        side:
+          type: string
+          enum: [long, short]
+        avg_entry_price:
+          $ref: "#/components/schemas/Money"
+        market_value:
+          $ref: "#/components/schemas/Money"
+        unrealized_pl:
+          $ref: "#/components/schemas/Money"
+        origin:
+          $ref: "#/components/schemas/Origin"
+        origin_detail:
+          type: [string, "null"]
+          description: >-
+            `research_agent` үед provider/model; `manual_operator` үед actor;
+            `external` үед `null`.
+
+    PositionsEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [positions]
+          properties:
+            positions:
+              type: array
+              items:
+                $ref: "#/components/schemas/Position"
+
+    Order:
+      type: object
+      required: [id, client_order_id, symbol, side, qty, order_type, status, origin, submitted_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Локал ID
+        broker_order_id:
+          type: [string, "null"]
+          description: Alpaca-ийн ID; илгээгдэх хүртэл `null`
+        client_order_id:
+          type: string
+          description: Idempotency түлхүүрээс гаргасан детерминистик ID
+        symbol:
+          type: string
+        side:
+          $ref: "#/components/schemas/OrderSide"
+        qty:
+          $ref: "#/components/schemas/Quantity"
+        filled_qty:
+          $ref: "#/components/schemas/Quantity"
+        order_type:
+          $ref: "#/components/schemas/OrderType"
+        limit_price:
+          $ref: "#/components/schemas/Money"
+        stop_price:
+          $ref: "#/components/schemas/Money"
+        time_in_force:
+          $ref: "#/components/schemas/TimeInForce"
+        status:
+          type: string
+          enum: [pending_risk, pending_approval, rejected, accepted, partially_filled, filled, canceled, expired, failed]
+        origin:
+          $ref: "#/components/schemas/Origin"
+        origin_detail:
+          type: [string, "null"]
+        decision_id:
+          type: [string, "null"]
+          format: uuid
+          description: Холбогдох `agent_decisions` мөр
+        submitted_at:
+          $ref: "#/components/schemas/Utc"
+        filled_at:
+          $ref: "#/components/schemas/Utc"
+
+    OrdersEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [orders]
+          properties:
+            orders:
+              type: array
+              items:
+                $ref: "#/components/schemas/Order"
+
+    ManualOrderRequest:
+      type: object
+      required: [symbol, side, qty, order_type, time_in_force]
+      properties:
+        symbol:
+          type: string
+          minLength: 1
+        side:
+          $ref: "#/components/schemas/OrderSide"
+        qty:
+          $ref: "#/components/schemas/Quantity"
+        order_type:
+          $ref: "#/components/schemas/OrderType"
+        time_in_force:
+          $ref: "#/components/schemas/TimeInForce"
+        limit_price:
+          $ref: "#/components/schemas/Money"
+        stop_price:
+          $ref: "#/components/schemas/Money"
+        confirmation_token:
+          type: string
+          description: |
+            Зөвхөн өмнөх 409 `confirmation_required` хариунаас авсан утга.
+            `grounded_in` / `rationale` ЭНД БАЙХГҮЙ — гарын order нь agent-ийн
+            санал БИШ, grounding checker хамаарахгүй (AC-32).
+
+    OrderAccepted:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [order, risk]
+          properties:
+            order:
+              $ref: "#/components/schemas/Order"
+            risk:
+              $ref: "#/components/schemas/RiskEvaluation"
+
+    RiskEvaluation:
+      type: object
+      required: [decision, checks, evaluated_at]
+      properties:
+        decision:
+          $ref: "#/components/schemas/RiskDecision"
+        reason:
+          type: [string, "null"]
+        evaluated_at:
+          $ref: "#/components/schemas/Utc"
+        checks:
+          type: array
+          description: >-
+            Шалгалт бүрийн үр дүн — юу унасныг, ямар хязгаартай харьцуулснаар
+            нь ил харуулна.
+          items:
+            type: object
+            required: [rule, passed]
+            properties:
+              rule:
+                type: string
+                enum:
+                  - system_state
+                  - restricted_symbol
+                  - position_pct
+                  - total_exposure_pct
+                  - daily_loss_limit
+                  - pdt_day_trades
+                  - order_notional
+                  - price_sanity
+                  - wind_down_direction
+              passed:
+                type: boolean
+              limit_name:
+                type: string
+                description: "config-ийн нэр, жишээ: `MAX_POSITION_PCT`"
+              limit_value:
+                type: string
+              actual_value:
+                type: string
+              detail:
+                type: string
+
+    Approval:
+      type: object
+      required: [id, version, state, decision_id, proposed_order, risk, created_at, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        state:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        decision_id:
+          type: string
+          format: uuid
+        proposed_order:
+          $ref: "#/components/schemas/ProposedOrder"
+        risk:
+          $ref: "#/components/schemas/RiskEvaluation"
+        created_at:
+          $ref: "#/components/schemas/Utc"
+        expires_at:
+          allOf:
+            - $ref: "#/components/schemas/Utc"
+          description: "`created_at + APPROVAL_TTL`. Дараа нь автоматаар `expired` (AC-6)."
+        resolved_at:
+          $ref: "#/components/schemas/Utc"
+        resolution_reason:
+          type: [string, "null"]
+
+    ProposedOrder:
+      type: object
+      required: [symbol, side, qty, order_type, rationale, grounded_in, provider, model]
+      properties:
+        symbol:
+          type: string
+        side:
+          $ref: "#/components/schemas/OrderSide"
+        qty:
+          $ref: "#/components/schemas/Quantity"
+        order_type:
+          $ref: "#/components/schemas/OrderType"
+        limit_price:
+          $ref: "#/components/schemas/Money"
+        stop_price:
+          $ref: "#/components/schemas/Money"
+        estimated_notional:
+          $ref: "#/components/schemas/Money"
+        rationale:
+          type: string
+        grounded_in:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uuid
+            description: "`tool_calls.id`"
+        provider:
+          type: string
+        model:
+          type: string
+
+    ApprovalsEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [approvals]
+          properties:
+            approvals:
+              type: array
+              items:
+                $ref: "#/components/schemas/Approval"
+
+    AttributionEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [groups]
+          properties:
+            groups:
+              type: array
+              description: Origin тус бүрээр нэг бүлэг. Мөргүй origin бүлэг үүсгэхгүй.
+              items:
+                type: object
+                required: [origin, symbols]
+                properties:
+                  origin:
+                    $ref: "#/components/schemas/Origin"
+                  origin_detail:
+                    type: [string, "null"]
+                  symbols:
+                    type: array
+                    items:
+                      type: object
+                      required: [symbol, has_open_position, open_order_count]
+                      properties:
+                        symbol:
+                          type: string
+                        has_open_position:
+                          type: boolean
+                        position_qty:
+                          $ref: "#/components/schemas/Quantity"
+                        market_value:
+                          $ref: "#/components/schemas/Money"
+                        open_order_count:
+                          type: integer
+                        last_decision_at:
+                          type: [string, "null"]
+                          format: date-time
+                        last_decision_id:
+                          type: [string, "null"]
+                          format: uuid
+
+    AgentDecision:
+      type: object
+      required: [id, agent, provider, model, created_at, proposal, risk, outcome]
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent:
+          type: string
+          enum: [research, auto_tuning]
+        provider:
+          type: string
+        model:
+          type: string
+        created_at:
+          $ref: "#/components/schemas/Utc"
+        proposal:
+          $ref: "#/components/schemas/ProposedOrder"
+        risk:
+          $ref: "#/components/schemas/RiskEvaluation"
+        grounding:
+          type: object
+          required: [passed]
+          properties:
+            passed:
+              type: boolean
+            unverified_claims:
+              type: array
+              items:
+                type: string
+              description: Цитат tool call-ийн payload-д ОЛДООГҮЙ тоон мэдэгдлүүд.
+        outcome:
+          type: string
+          enum: [grounding_failed, risk_rejected, awaiting_approval, approved, executed, order_failed]
+        order_id:
+          type: [string, "null"]
+          format: uuid
+
+    AgentDecisionsEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [decisions]
+          properties:
+            decisions:
+              type: array
+              items:
+                $ref: "#/components/schemas/AgentDecision"
+
+    AgentDecisionDetail:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [decision, tool_calls]
+          properties:
+            decision:
+              $ref: "#/components/schemas/AgentDecision"
+            tool_calls:
+              type: array
+              items:
+                type: object
+                required: [id, tool_name, request, response, source, called_at]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  tool_name:
+                    type: string
+                  request:
+                    type: object
+                    additionalProperties: true
+                  response:
+                    type: object
+                    additionalProperties: true
+                    description: Alpaca-аас ирсэн ТҮҮХИЙ хариу (зөвхөн redaction)
+                  source:
+                    $ref: "#/components/schemas/Source"
+                  called_at:
+                    $ref: "#/components/schemas/Utc"
+                  latency_ms:
+                    type: integer
+
+    ProvidersEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [providers, active]
+          properties:
+            providers:
+              type: array
+              items:
+                type: object
+                required: [id, vendor, model, transport, healthy, read_only]
+                properties:
+                  id:
+                    type: string
+                    examples: ["claude-mcp"]
+                  vendor:
+                    type: string
+                    enum: [anthropic, openai, xai, opencode, local]
+                  model:
+                    type: string
+                  transport:
+                    type: string
+                    enum: [mcp, function_calling, stdio_json]
+                  healthy:
+                    type: boolean
+                  read_only:
+                    type: boolean
+                    description: |
+                      Local / fallback provider-ууд анхдагчаар `true` — тэдэнд
+                      `propose_order` НЭЭГДЭХГҮЙ (хавсралт 05 §2).
+                  last_error:
+                    type: [string, "null"]
+            active:
+              type: object
+              additionalProperties:
+                type: string
+              description: "role → provider_id (жишээ: `{\"research\": \"claude-mcp\"}`)"
+
+    ProviderSwitchResult:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [role, previous_provider_id, new_provider_id, in_flight_calls, switched_at]
+          properties:
+            role:
+              type: string
+            previous_provider_id:
+              type: string
+            new_provider_id:
+              type: string
+            in_flight_calls:
+              type: integer
+              description: >-
+                Хуучин provider-оор дуусах tool call-ийн тоо. Тэдгээр нь
+                ХУУЧНААР бүртгэгдэнэ.
+            switched_at:
+              $ref: "#/components/schemas/Utc"
+
+    TuningEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [parameters]
+          properties:
+            parameters:
+              type: array
+              items:
+                type: object
+                required: [name, current_value, bounds, applies_to]
+                properties:
+                  name:
+                    type: string
+                  current_value:
+                    type: string
+                  bounds:
+                    type: object
+                    required: [min, max, step]
+                    properties:
+                      min:
+                        type: string
+                      max:
+                        type: string
+                      step:
+                        type: string
+                  applies_to:
+                    type: string
+                    enum: [backtest, paper, live]
+                    description: >-
+                      Анхдагчаар `paper`. `live` болох цорын ганц зам =
+                      `POST /tuning/promote`.
+                  history:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, old_value, new_value, changed_at, approved_by, walk_forward]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        old_value:
+                          type: string
+                        new_value:
+                          type: string
+                        changed_at:
+                          $ref: "#/components/schemas/Utc"
+                        approved_by:
+                          type: string
+                          enum: [system, operator]
+                        backtest_window:
+                          type: object
+                          properties:
+                            start:
+                              type: string
+                              format: date
+                            end:
+                              type: string
+                              format: date
+                        walk_forward:
+                          type: object
+                          required: [folds, in_sample_metric, out_of_sample_metric]
+                          properties:
+                            folds:
+                              type: integer
+                            in_sample_metric:
+                              type: string
+                            out_of_sample_metric:
+                              type: string
+
+    SystemStateEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [state, changed_at, changed_by]
+          properties:
+            state:
+              $ref: "#/components/schemas/SystemState"
+            reason:
+              type: [string, "null"]
+            changed_at:
+              $ref: "#/components/schemas/Utc"
+            changed_by:
+              type: string
+              enum: [operator, circuit_breaker, scheduler]
+            wind_down_deadline:
+              type: [string, "null"]
+              format: date-time
+              description: Зөвхөн `winding_down` үед. Дуусахад `halted`.
+            seconds_remaining:
+              type: [integer, "null"]
+            breaker_metrics:
+              type: array
+              description: |
+                Circuit breaker-ийн метрик бүрийн одоогийн байдал. `activate`
+                энэ жагсаалтыг ДАХИН хэмжиж шийднэ — хадгалагдсан туг биш.
+              items:
+                type: object
+                required: [metric, value, limit_name, limit_value, tripped]
+                properties:
+                  metric:
+                    type: string
+                    enum: [daily_loss, api_error_rate, order_reject_rate, ws_disconnects]
+                  value:
+                    type: string
+                  limit_name:
+                    type: string
+                  limit_value:
+                    type: string
+                  tripped:
+                    type: boolean
+
+    Problem:
+      description: RFC 9457 Problem Details.
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+          enum:
+            - confirmation_required
+            - system_halted
+            - winding_down_increase_blocked
+            - risk_rejected
+            - grounding_failed
+            - idempotency_conflict
+            - breaker_still_tripped
+            - already_active
+            - approval_expired
+            - version_conflict
+            - broker_unavailable
+            - provider_unavailable
+            - not_found
+        detail:
+          type: string
+        risk:
+          $ref: "#/components/schemas/RiskEvaluation"
+        confirmation:
+          type: object
+          description: >-
+            Зөвхөн `confirmation_required` үед. Хоёр шаттай баталгаажуулалтын
+            сорилт.
+          required: [token, prompt, expires_at]
+          properties:
+            token:
+              type: string
+            prompt:
+              type: string
+              description: |
+                Operator-т харуулах тодорхой текст. Үйлдэл тус бүрд ӨӨР —
+                хоёр товчийг андуурахаас сэргийлнэ (AC-38).
+            expires_at:
+              $ref: "#/components/schemas/Utc"
+        breaker_metrics:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+--- #! 2/3 AsyncAPI — WebSocket сувгууд
+asyncapi: 3.0.0
+info:
+  title: PERSONAL-3 — Frontend WebSocket
+  version: 1.0.0
+  description: |
+    Нэг WebSocket холболт (`/ws`), олон logical суваг. Backend нь Redis
+    pub/sub-аас уншаад холбогдсон клиентүүдэд fan-out хийнэ.
+
+    **Backpressure бодлого:** `system` суваг ХЭЗЭЭ Ч хаягдахгүй. Ачаалал
+    үед `ticks` сувгийн мессеж хаягдаж болно (сүүлийнх нь ялна), `orders`
+    ба `agent-decisions` нь дарааллаараа хадгалагдана. Клиент `seq`-ийн
+    тасалдлыг илрүүлбэл REST-ээр дахин авна.
+
+    **Staleness:** сервер `HEARTBEAT_SECONDS` тутам `heartbeat` илгээнэ.
+    Клиент 5 секунд мессеж аваагүй бол «stale» banner гаргана (AC-2) —
+    сервер эрүүл гэж мэдэгдэх хүртэл.
+
+servers:
+  local:
+    host: localhost:8000
+    pathname: /ws
+    protocol: ws
+
+channels:
+  ticks:
+    address: "ticks:{symbol}"
+    parameters:
+      symbol:
+        description: Alpaca symbol
+    messages:
+      tick:
+        $ref: "#/components/messages/Tick"
+  orders:
+    address: orders
+    messages:
+      orderUpdate:
+        $ref: "#/components/messages/OrderUpdate"
+  agentDecisions:
+    address: agent-decisions
+    messages:
+      decision:
+        $ref: "#/components/messages/DecisionEvent"
+  system:
+    address: system
+    description: |
+      Хамгийн өндөр эрэмбэ. Kill switch, wind-down, circuit breaker, provider
+      switch, approval-ийн өөрчлөлт — бүгд энд. Backpressure үед ч хаягдахгүй.
+    messages:
+      systemEvent:
+        $ref: "#/components/messages/SystemEvent"
+
+operations:
+  receiveTick:
+    action: receive
+    channel:
+      $ref: "#/channels/ticks"
+  receiveOrderUpdate:
+    action: receive
+    channel:
+      $ref: "#/channels/orders"
+  receiveDecision:
+    action: receive
+    channel:
+      $ref: "#/channels/agentDecisions"
+  receiveSystemEvent:
+    action: receive
+    channel:
+      $ref: "#/channels/system"
+
+components:
+  messages:
+    Tick:
+      payload:
+        type: object
+        required: [seq, symbol, price, ts, source, stale]
+        properties:
+          seq:
+            type: integer
+          symbol:
+            type: string
+          price:
+            type: string
+            pattern: '^[0-9]+\.[0-9]+$'
+          ts:
+            type: string
+            format: date-time
+          source:
+            type: string
+            enum: [alpaca_live, alpaca_paper]
+          stale:
+            type: boolean
+            description: Талбар үргэлж БАЙНА. Орхих нь таамаглах цонх үүсгэнэ.
+    OrderUpdate:
+      payload:
+        type: object
+        required: [seq, order_id, status, origin, ts, source]
+        properties:
+          seq:
+            type: integer
+          order_id:
+            type: string
+            format: uuid
+          broker_order_id:
+            type: [string, "null"]
+          symbol:
+            type: string
+          status:
+            type: string
+          filled_qty:
+            type: string
+          filled_avg_price:
+            type: [string, "null"]
+          origin:
+            type: string
+            enum: [research_agent, auto_tuning, manual_operator, external]
+          origin_detail:
+            type: [string, "null"]
+          ts:
+            type: string
+            format: date-time
+          source:
+            type: string
+            enum: [alpaca_live, alpaca_paper]
+    DecisionEvent:
+      payload:
+        type: object
+        required: [seq, decision_id, agent, provider, model, outcome, grounded_in, ts]
+        properties:
+          seq:
+            type: integer
+          decision_id:
+            type: string
+            format: uuid
+          agent:
+            type: string
+          provider:
+            type: string
+          model:
+            type: string
+          symbol:
+            type: string
+          outcome:
+            type: string
+          grounded_in:
+            type: array
+            items:
+              type: string
+              format: uuid
+          ts:
+            type: string
+            format: date-time
+    SystemEvent:
+      payload:
+        type: object
+        required: [seq, event, ts]
+        properties:
+          seq:
+            type: integer
+          event:
+            type: string
+            enum:
+              - state_changed
+              - kill_switch_engaged
+              - wind_down_started
+              - wind_down_expired
+              - activated
+              - breaker_tripped
+              - provider_switched
+              - approval_created
+              - approval_resolved
+              - broker_unreachable
+              - heartbeat
+          state:
+            type: string
+            enum: [active, winding_down, halted]
+          reason:
+            type: [string, "null"]
+          wind_down_deadline:
+            type: [string, "null"]
+            format: date-time
+          seconds_remaining:
+            type: [integer, "null"]
+          detail:
+            type: object
+            additionalProperties: true
+          ts:
+            type: string
+            format: date-time
+
+--- #! 3/3 Tool Contract v1 — Agent Gateway ↔ ямар ч LLM provider
+# Provider-neutral. Claude (MCP), OpenAI/Grok (function calling), opencode
+# (stdio JSON), local model — бүгд ЯГ ЭНЭ схемийг л хардаг. Adapter-ийн
+# цорын ганц ажил бол энэ схемийг тухайн vendor-ийн форматад буулгах.
+contract_version: "1.0.0"
+
+invariants:
+  - id: INV-1
+    rule: >-
+      `propose_order` ба `propose_tuning_change` нь LLM-д нээлттэй ЦОРЫН ГАНЦ
+      бичих маягийн tool. Хоёул зөвхөн САНАЛ үүсгэнэ — Alpaca руу ХЭЗЭЭ Ч
+      шууд хүрэхгүй.
+  - id: INV-2
+    rule: >-
+      tool result бүрт өөрийн `tool_call_id`, `timestamp`, `source`,
+      `system_state` талбарууд ЗААВАЛ байна. Аль нэг нь дутвал Gateway нь
+      хариуг LLM-д хүргэхгүй, schema алдаа гаргана.
+  - id: INV-3
+    rule: >-
+      Мөнгө хөдөлгөх талбарт `grounded_in` / `backtest_evidence` лавлагаагүй
+      түүхий тоо ХЭЗЭЭ Ч хүлээн авахгүй.
+  - id: INV-4
+    rule: >-
+      Ямар ч provider-т API key, DB credential, эсвэл «шууд гүйцэтгэ» чадвар
+      өгөхгүй. Tool call бүр backend-ээр дамжиж, хариу буцахаас ӨМНӨ
+      `tool_calls`-д бичигдэнэ.
+  - id: INV-5
+    rule: >-
+      `read_only: true` гэж тохируулсан provider-т (local / fallback)
+      `propose_order` ба `propose_tuning_change` схемээс БҮРЭН хасагдана —
+      татгалзах биш, огт харагдахгүй.
+
+# Бүх tool result-ийг ороох дугтуй. Adapter бүр үүнийг өөрчлөлтгүй дамжуулна.
+result_envelope:
+  type: object
+  required: [tool_call_id, timestamp, source, system_state, ok]
+  properties:
+    tool_call_id:
+      type: string
+      format: uuid
+    timestamp:
+      type: string
+      format: date-time
+      description: UTC, `Z` төгсгөлтэй
+    source:
+      type: string
+      enum: [alpaca_live, alpaca_paper, backtest]
+    system_state:
+      type: object
+      required: [state, guidance]
+      description: |
+        AC-34: agent нь системийн төлөвийг СИСТЕМИЙН МЭДЭГДЛЭЭР биш,
+        ӨГӨГДЛӨӨР хүлээж авна. Тиймээс төлөв солигдсоны дараах ЭХНИЙ tool
+        result нь шинэ утгыг агуулна — agent төлөвийг мэдэлгүй үлдэх цонх
+        БАЙХГҮЙ.
+      properties:
+        state:
+          type: string
+          enum: [active, winding_down, halted]
+        seconds_remaining:
+          type: [integer, "null"]
+        reason:
+          type: [string, "null"]
+        guidance:
+          type: string
+          description: |
+            LLM-д зориулсан тодорхой заавар. Жишээ (`winding_down`):
+            "Positions may only be reduced or closed. Any proposal that
+            increases exposure will be rejected."
+    ok:
+      type: boolean
+    error:
+      type: [object, "null"]
+      description: |
+        Алдаа нь ИЛ. `no_data`, `stale`, `unreachable` — талбар орхих замаар
+        ХЭЗЭЭ Ч илэрхийлэхгүй (хавсралт 10 §2.4).
+      properties:
+        code:
+          type: string
+          enum: [no_data, stale, unreachable, invalid_symbol, rate_limited]
+        message:
+          type: string
+    data:
+      type: [object, "null"]
+
+tools:
+
+  - name: get_account
+    access: read
+    description: >-
+      Return the current Alpaca account snapshot. Always live data from the
+      broker, never estimated or cached beyond STALE_AFTER_SECONDS.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [equity, cash, buying_power, day_trade_count, pattern_day_trader]
+      properties:
+        equity:
+          type: string
+        cash:
+          type: string
+        buying_power:
+          type: string
+        day_trade_count:
+          type: integer
+        pattern_day_trader:
+          type: boolean
+
+  - name: get_positions
+    access: read
+    description: Return current open positions with their origin attribution.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [positions]
+      properties:
+        positions:
+          type: array
+          items:
+            type: object
+            required: [symbol, qty, side, avg_entry_price, market_value, origin]
+            properties:
+              symbol:
+                type: string
+              qty:
+                type: string
+              side:
+                type: string
+                enum: [long, short]
+              avg_entry_price:
+                type: string
+              market_value:
+                type: string
+              origin:
+                type: string
+                enum: [research_agent, auto_tuning, manual_operator, external]
+
+  - name: get_quote
+    access: read
+    description: >-
+      Return the latest quote for a symbol. If the quote is older than
+      STALE_AFTER_SECONDS the envelope returns error.code = "stale"; if the
+      symbol is unknown or delisted it returns error.code = "invalid_symbol".
+      It NEVER returns a guessed or interpolated price.
+    input_schema:
+      type: object
+      required: [symbol]
+      properties:
+        symbol:
+          type: string
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [symbol, bid, ask, last, quote_ts]
+      properties:
+        symbol:
+          type: string
+        bid:
+          type: string
+        ask:
+          type: string
+        last:
+          type: string
+        quote_ts:
+          type: string
+          format: date-time
+
+  - name: get_bars
+    access: read
+    description: >-
+      Return historical OHLCV bars from Alpaca market data. Returns only bars
+      that actually exist; a range with no data returns error.code = "no_data"
+      and an EMPTY array, never synthesized bars.
+    input_schema:
+      type: object
+      required: [symbol, timeframe, start, end]
+      properties:
+        symbol:
+          type: string
+        timeframe:
+          type: string
+          enum: ["1Min", "5Min", "15Min", "1Hour", "1Day"]
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 10000
+      additionalProperties: false
+
+  - name: get_backtest_result
+    access: read
+    description: >-
+      Run or fetch a cached backtest over historical bars. The envelope's
+      source is always "backtest" — this data must never be described as live.
+    input_schema:
+      type: object
+      required: [strategy_id, start, end, params]
+      properties:
+        strategy_id:
+          type: string
+        start:
+          type: string
+          format: date
+        end:
+          type: string
+          format: date
+        params:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+
+  - name: get_tuning_bounds
+    access: read
+    description: >-
+      Return the whitelist of auto-tunable parameters and their approved
+      numeric bounds. A value outside these bounds can never be proposed.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+
+  - name: propose_order
+    access: propose
+    description: >-
+      Propose a trade for Risk Agent evaluation. THIS DOES NOT PLACE AN ORDER.
+      Every numeric claim in `rationale` must also appear in the response
+      payload of at least one tool call listed in `grounded_in`, or the
+      proposal is rejected before the Risk Agent ever sees it.
+      When system_state is "winding_down", only proposals that reduce or close
+      an existing position are accepted; anything that increases exposure is
+      rejected. When system_state is "halted", every proposal is rejected.
+    input_schema:
+      type: object
+      required: [symbol, side, qty, order_type, rationale, grounded_in]
+      properties:
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [buy, sell]
+        qty:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,9})?$'
+        order_type:
+          type: string
+          enum: [market, limit, stop, stop_limit, bracket]
+        limit_price:
+          type: string
+        stop_price:
+          type: string
+        time_in_force:
+          type: string
+          enum: [day, gtc, ioc, fok]
+        rationale:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        grounded_in:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uuid
+          description: tool_call_id-ууд. Хоосон массив ХҮЛЭЭН АВАХГҮЙ.
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [decision_id, accepted, stage]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        accepted:
+          type: boolean
+        stage:
+          type: string
+          enum: [grounding_failed, risk_rejected, awaiting_approval, approved_for_execution]
+        reason:
+          type: [string, "null"]
+        unverified_claims:
+          type: array
+          items:
+            type: string
+          description: >-
+            Grounding унасан үед — rationale дахь ямар тоо цитат tool call-д
+            ОЛДООГҮЙ болохыг ил нэрлэнэ. LLM засаад дахин оролдож болно.
+
+  - name: propose_tuning_change
+    access: propose
+    description: >-
+      Propose a new value for a whitelisted parameter, within its approved
+      bounds, backed by walk-forward backtest evidence. Applies to
+      paper/backtest only. Promotion to live requires an explicit human
+      action and can never be performed by any model.
+    input_schema:
+      type: object
+      required: [parameter, new_value, backtest_evidence]
+      properties:
+        parameter:
+          type: string
+        new_value:
+          type: string
+        backtest_evidence:
+          type: string
+          format: uuid
+          description: "`get_backtest_result`-ийн tool_call_id"
+      additionalProperties: false
