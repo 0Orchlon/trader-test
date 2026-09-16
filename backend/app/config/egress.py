@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from app.config.mode import LIVE_HOST
 
 
@@ -20,7 +22,10 @@ class LiveEgressGuard:
         self.blocked: list[str] = []
 
     def check(self, url: str) -> None:
-        if self.forbidden_host in url:
+        # Хостыг ЯГ тааруулна: `api.alpaca.markets` нь
+        # `paper-api.alpaca.markets`-ийн дэд мөр — дэд мөрөөр шалгавал paper ч
+        # хоригдоно.
+        if urlsplit(url).hostname == self.forbidden_host:
             self.blocked.append(url)
             raise LiveEgressViolation(
                 f"тестийн явцад live Alpaca руу дуудалт хоригтой: {url}"

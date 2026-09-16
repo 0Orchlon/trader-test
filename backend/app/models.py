@@ -14,7 +14,6 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -27,12 +26,12 @@ from sqlalchemy import (
 from sqlalchemy import Uuid as SAUuid
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.db import Base, UtcDateTime
 
 NUM = Numeric(20, 8)
 #: SQLite-д BIGINT нь autoincrement хийдэггүй — variant-аар INTEGER болгоно.
 SEQ = BigInteger().with_variant(Integer, "sqlite")
-TS = DateTime(timezone=True)
+TS = UtcDateTime()
 
 
 class Account(Base):

@@ -19,7 +19,7 @@ def money(value: str | int | Decimal) -> Decimal:
 
 
 def money_str(value: Decimal | None) -> str | None:
-    """contracts.yaml `Money` — `^-?[0-9]+\.[0-9]{2}$`."""
+    r"""contracts.yaml `Money` — `^-?[0-9]+\.[0-9]{2}$`."""
     if value is None:
         return None
     return str(money(value).quantize(CENT))
