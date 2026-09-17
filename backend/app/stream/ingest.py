@@ -42,6 +42,23 @@ def backoff_delay(attempt: int) -> float:
     return min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * (2**attempt))
 
 
+async def _close(stream) -> None:
+    """Урсгалыг хэлбэрээс нь үл хамааран хаана.
+
+    `stream_trade_updates()` нь async generator (`aclose`) ч, энгийн coroutine
+    (`close`) ч байж болно — adapter тус бүр өөрөөр бичигдсэн. Хаагдаагүй
+    coroutine нь `never awaited` RuntimeWarning-оор л мэдэгдэнэ, дараа нь
+    чимээгүй нөөц алдалт болно.
+    """
+    if stream is None:
+        return
+    closer = getattr(stream, "aclose", None)
+    if closer is not None:
+        await closer()
+    elif hasattr(stream, "close"):
+        stream.close()
+
+
 @dataclass(slots=True)
 class ChannelHealth:
     last_update_at: datetime | None = None
@@ -207,13 +224,20 @@ class TradeUpdateIngestor:
         cycles = 0
         while max_cycles is None or cycles < max_cycles:
             cycles += 1
+            stream = None
             try:
-                await self.consume(self.broker.stream_trade_updates())
+                stream = self.broker.stream_trade_updates()
+                await self.consume(stream)
                 attempt = 0
             except Exception:
                 async with self.sessionmaker() as session:
                     await breaker.record(session, "ws_disconnect", ok=False)
                     await session.commit()
+            finally:
+                # Мөчлөг ямар ч замаар дуусахад урсгалыг ХААНА. Үүнгүйгээр
+                # эвдэрсэн холболт бүр хаагдаагүй generator/coroutine үлдээж,
+                # дахин холболтын зам нөөц алдана.
+                await _close(stream)
             await self.monitor.sweep()
             await asyncio.sleep(backoff_delay(attempt))
             attempt += 1

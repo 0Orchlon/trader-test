@@ -39,7 +39,7 @@ def test_limits_have_no_defaults(monkeypatch):
     for name in Settings.REQUIRED_LIMIT_FIELDS:
         monkeypatch.delenv(name, raising=False)
     with pytest.raises(Exception):
-        Settings()
+        Settings(_env_file=None)
 
 
 def test_settings_loads_when_all_limits_present(monkeypatch, limit_env):

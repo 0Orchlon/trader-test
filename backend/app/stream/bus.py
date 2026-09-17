@@ -23,6 +23,7 @@ from collections import deque
 from dataclasses import dataclass
 from itertools import count
 from typing import Any
+from uuid import uuid4
 
 from app.util.time import now_utc, to_iso
 
@@ -34,6 +35,10 @@ CHANNEL_TICKS = "ticks"
 #: Хаягдаж БОЛОХ сувгууд. Бусад нь бүрэн хүргэгдэнэ.
 DROPPABLE = (CHANNEL_TICKS,)
 
+#: Redis-ийн утсан дээрх техник талбар — нийтлэгч instance-ийн тэмдэг.
+#: Локал хүргэлтийн ӨМНӨ хасагдана: WS схемд (asyncapi) энэ талбар БАЙХГҮЙ.
+SRC_FIELD = "_src"
+
 DEFAULT_TICK_BUFFER = 256
 #: Дахин холбогдоход сүүлийн хэдэн `system` мессежийг давтах вэ (AC-14 DoD б).
 SYSTEM_REPLAY = 1
@@ -43,6 +48,11 @@ SYSTEM_REPLAY = 1
 class Message:
     channel: str
     payload: dict[str, Any]
+
+
+def _as_text(value: Any) -> str:
+    """redis-py нь `decode_responses`-ээс хамаарч bytes эсвэл str буцаана."""
+    return value.decode() if isinstance(value, bytes) else str(value)
 
 
 def _droppable(channel: str) -> bool:
@@ -106,6 +116,10 @@ class EventBus:
     def __init__(self, *, tick_buffer: int = DEFAULT_TICK_BUFFER, redis: Any | None = None) -> None:
         self.tick_buffer = tick_buffer
         self.redis = redis
+        #: Процессын дахин давтагдашгүй тэмдэг. Redis-ээр буцаж ирсэн ӨӨРИЙН
+        #: мессежийг таньж хаяхад хэрэглэнэ — эс бөгөөс клиент бүрийг хоёр
+        #: удаа мэдэгдэнэ.
+        self.instance_id = uuid4().hex
         self._subscribers: list[Subscriber] = []
         self._seq = count(1)
         self._system_history: deque[Message] = deque(maxlen=SYSTEM_REPLAY)
@@ -138,17 +152,50 @@ class EventBus:
         """
         return {"seq": next(self._seq), "ts": to_iso(now_utc()), **payload}
 
+    def deliver(self, message: Message) -> None:
+        """Process-дотоод хүргэлт. Redis рүү ДАХИН нийтлэхгүй.
+
+        `publish()` ба Redis-ээс ирсэн мессеж хоёулаа ЭНД нийлнэ — хүргэх
+        дүрэм (system-ийн түүх, хаялт) нэг газарт л бичигдэнэ.
+        """
+        if message.channel == CHANNEL_SYSTEM:
+            self._system_history.append(message)
+        for sub in self._subscribers:
+            if sub.matches(message.channel):
+                sub.offer(message)
+
     async def publish(self, channel: str, payload: dict[str, Any]) -> Message:
         enriched = self.stamp(payload)
         message = Message(channel=channel, payload=enriched)
-        if channel == CHANNEL_SYSTEM:
-            self._system_history.append(message)
-        for sub in self._subscribers:
-            if sub.matches(channel):
-                sub.offer(message)
+        self.deliver(message)
         if self.redis is not None:
-            await self.redis.publish(channel, json.dumps(enriched, ensure_ascii=False))
+            wire = {**enriched, SRC_FIELD: self.instance_id}
+            await self.redis.publish(channel, json.dumps(wire, ensure_ascii=False))
         return message
+
+    async def bridge(self) -> None:
+        """Redis → локал fan-in. `REDIS_URL` тохируулсан үед л ажиллана.
+
+        AC-14 нь «БҮХ холбогдсон клиент» гэж шаардана: олон worker/instance
+        үед нэг instance-ийн kill switch нөгөөгийн WS клиентэд хүрэх цорын
+        ганц зам нь энэ. Нийтлэх талыг эзэмшээд захиалах талыг эзэмшихгүй
+        байх нь чимээгүй тасархай — kill switch зарлагдсан ч зарим operator
+        харахгүй.
+        """
+        if self.redis is None:  # pragma: no cover - дуудагч шалгадаг
+            return
+        pubsub = self.redis.pubsub()
+        await pubsub.psubscribe("*")
+        try:
+            async for raw in pubsub.listen():
+                if raw.get("type") != "pmessage":
+                    continue
+                payload = json.loads(_as_text(raw["data"]))
+                if payload.pop(SRC_FIELD, None) == self.instance_id:
+                    continue  # өөрийн мессеж — аль хэдийн хүргэгдсэн
+                self.deliver(Message(channel=_as_text(raw["channel"]), payload=payload))
+        finally:
+            await pubsub.aclose()
 
 
 #: Процессын bus. `app.main`-д эхлүүлнэ; тест бүрт шинээр үүсгэнэ.

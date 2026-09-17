@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app import models  # noqa: F401  — метадата бүртгүүлэх
@@ -29,8 +28,13 @@ async def apply_schema(engine: AsyncEngine) -> None:
 
     sql = (MIGRATIONS_DIR / "postgres_append_only.sql").read_text(encoding="utf-8")
     async with engine.begin() as conn:
-        for statement in [s.strip() for s in sql.split(";--split--") if s.strip()]:
-            await conn.execute(text(statement))
+        # asyncpg-ийн prepared-statement зам нь dollar-quoted функцийн биен
+        # дээр `TypeError: expected string or bytes-like object, got 'NoneType'`
+        # гэж унадаг (status message нь None). Driver-ийн simple query
+        # protocol-оор файлыг БҮХЭЛД нь нэг гүйлгээнд ажиллуулна — `;--split--`
+        # нь SQL-ийн энгийн мөрийн тайлбар тул файл өөрөө хүчинтэй SQL.
+        raw = await conn.get_raw_connection()
+        await raw.driver_connection.execute(sql)
 
 
 async def _main() -> None:

@@ -42,7 +42,15 @@ async def get_health(request: Request, machine: StateMachineDep):
         broker_ok, detail = False, type(exc).__name__
 
     source = current_source(request)
-    redis_ok = request.app.state.bus.redis is not None
+    # «Тохируулсан» нь «хүрэх боломжтой» ГЭСЭН ҮГ БИШ — үнэхээр ping хийнэ.
+    redis_ok, redis_detail = False, "тохируулаагүй"
+    redis_client = request.app.state.bus.redis
+    if redis_client is not None:
+        try:
+            await redis_client.ping()
+            redis_ok, redis_detail = True, None
+        except Exception as exc:
+            redis_detail = type(exc).__name__
     provider_router = getattr(request.app.state, "provider_router", None)
     return envelope(
         {
@@ -53,7 +61,7 @@ async def get_health(request: Request, machine: StateMachineDep):
             "redis": {
                 "name": "redis",
                 "reachable": redis_ok,
-                "detail": None if redis_ok else "тохируулаагүй",
+                "detail": redis_detail,
             },
             "providers": provider_router.health() if provider_router else [],
         },

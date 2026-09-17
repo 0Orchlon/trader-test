@@ -145,18 +145,18 @@ async def _start_background(app: FastAPI):
     ingestor = TradeUpdateIngestor(
         app.state.sessionmaker, app.state.broker, app.state.bus, monitor
     )
-    task = asyncio.create_task(ingestor.run_forever())
+    tasks = [asyncio.create_task(ingestor.run_forever())]
+    if app.state.bus.redis is not None:
+        tasks.append(asyncio.create_task(app.state.bus.bridge()))
     scheduler = build_scheduler(app)
     scheduler.start()
     app.state.scheduler = scheduler
 
     async def stop() -> None:
         scheduler.shutdown(wait=False)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     return stop
 
@@ -175,4 +175,17 @@ def build() -> FastAPI:  # pragma: no cover - uvicorn-ийн орох цэг
         api_secret=settings.ALPACA_API_SECRET,
         stale_after_seconds=settings.STALE_AFTER_SECONDS,
     )
-    return create_app(engine=engine, settings=settings, broker=broker, background=True)
+    # `REDIS_URL` тохируулсан бол bus нь instance хооронд fan-out хийнэ
+    # (AC-14). Байхгүй бол process-дотоод bus дангаараа — Redis нь СОНГОЛТ.
+    bus = EventBus(redis=_make_redis(settings.REDIS_URL))
+    return create_app(
+        engine=engine, settings=settings, broker=broker, bus=bus, background=True
+    )
+
+
+def _make_redis(url: str | None):  # pragma: no cover - I/O эхлүүлэлт
+    if not url:
+        return None
+    from redis.asyncio import from_url
+
+    return from_url(url, decode_responses=True)

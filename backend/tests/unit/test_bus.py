@@ -96,3 +96,70 @@ async def test_ordered_channels_are_not_dropped(channel: str):
         await bus.publish(channel, {"i": i})
     received = [m.payload["i"] for m in sub.drain()]
     assert received == list(range(500))
+
+
+class _FanoutRedis:
+    """Хоёр instance-ийг холбосон process-дотоод pub/sub хуулбар."""
+
+    def __init__(self) -> None:
+        self.queues: list[asyncio.Queue] = []
+
+    async def publish(self, channel: str, data: str) -> None:
+        for queue in self.queues:
+            queue.put_nowait({"type": "pmessage", "channel": channel, "data": data})
+
+    def pubsub(self):
+        queue: asyncio.Queue = asyncio.Queue()
+        self.queues.append(queue)
+        outer = self
+
+        class _PubSub:
+            async def psubscribe(self, pattern: str) -> None:
+                pass
+
+            async def listen(self):
+                while True:
+                    yield await queue.get()
+
+            async def aclose(self) -> None:
+                outer.queues.remove(queue)
+
+        return _PubSub()
+
+
+async def test_bridge_delivers_other_instance_messages_without_echo():
+    """AC-14: нэг instance-ийн `system` мессеж НӨГӨӨ instance-ийн клиентэд хүрнэ.
+
+    Мөн нийтлэгч өөрийнхөө мессежийг Redis-ээс буцааж хүргэхгүй — эс бөгөөс
+    kill switch-ийн мэдэгдэл клиент бүрт хоёр удаа очно.
+    """
+    redis = _FanoutRedis()
+    a, b = EventBus(redis=redis), EventBus(redis=redis)
+    sub_a, sub_b = a.subscribe([CHANNEL_SYSTEM]), b.subscribe([CHANNEL_SYSTEM])
+    tasks = [asyncio.create_task(bus.bridge()) for bus in (a, b)]
+    await asyncio.sleep(0)
+
+    await a.publish(CHANNEL_SYSTEM, {"event": "kill_switch"})
+    await asyncio.sleep(0.05)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert [m.payload["event"] for m in sub_b.drain()] == ["kill_switch"]
+    assert [m.payload["event"] for m in sub_a.drain()] == ["kill_switch"]  # давхардахгүй
+
+
+async def test_bridge_strips_transport_field_from_payload():
+    """`_src` нь тээврийн талбар — asyncapi схемд байхгүй тул хүргэхээс өмнө хасагдана."""
+    redis = _FanoutRedis()
+    a, b = EventBus(redis=redis), EventBus(redis=redis)
+    sub_b = b.subscribe([CHANNEL_SYSTEM])
+    task = asyncio.create_task(b.bridge())
+    await asyncio.sleep(0)
+
+    await a.publish(CHANNEL_SYSTEM, {"event": "heartbeat"})
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert "_src" not in sub_b.drain()[0].payload
