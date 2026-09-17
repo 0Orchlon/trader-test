@@ -95,9 +95,13 @@ def build_scheduler(app) -> AsyncIOScheduler:
         expire_approvals, "interval", seconds=APPROVAL_REAP_SECONDS,
         args=[sessionmaker], id="expire_approvals",
     )
+    # `max_instances`/`coalesce` нь ИЛ: broker удаашрахад ажиллалт хуримтлах
+    # эсвэл давхцахгүй. Дуудлагын хугацааг `breaker.BROKER_PROBE_TIMEOUT`
+    # хязгаарладаг тул энэ нь зөвхөн хамгаалалтын хоёр дахь давхарга (O-1).
     scheduler.add_job(
         enforce_breaker, "interval", seconds=BREAKER_SECONDS,
         args=[sessionmaker, settings, broker, publisher], id="enforce_breaker",
+        max_instances=1, coalesce=True, misfire_grace_time=BREAKER_SECONDS,
     )
     scheduler.add_job(
         reconcile_eod, CronTrigger(hour=EOD_HOUR_UTC, minute=0, timezone="UTC"),

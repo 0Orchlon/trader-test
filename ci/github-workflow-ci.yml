@@ -74,3 +74,13 @@ jobs:
       - run: npm ci
         working-directory: frontend
       - run: bash ci/reproducible-build.sh
+
+  # UAT-д гурван ажиллалт дараалан унасан шалтгаан нь код биш, БАЙРШУУЛАХ
+  # ЗАМ байгаагүй явдал (U-2 — түр зуурын хавтаснаас mount, U-4 — backend
+  # огт байршуулаагүй). Одоо зам нь репод байгаа тул тэр зам нь эвдэрсэн
+  # эсэхийг CI барина.
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f docker-compose.dev.yml build backend frontend

@@ -11,6 +11,7 @@ LLM-ээс хамаарал БАЙХГҮЙ — бүх provider унасан үе
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -29,6 +30,15 @@ ORDER_REJECT_RATE = "order_reject_rate"
 WS_DISCONNECTS = "ws_disconnects"
 
 METRICS = (DAILY_LOSS, API_ERROR_RATE, ORDER_REJECT_RATE, WS_DISCONNECTS)
+
+#: Broker-ийн P&L probe-ийн хугацааны дээд хязгаар (секунд).
+#: `enforce_breaker` нь 5 секунд тутам ажиллана (`scheduler.BREAKER_SECONDS`),
+#: харин httpx-ийн client timeout нь 10 секунд. Хязгааргүй бол breaker-ийн
+#: ажиллалт интервалаасаа урт болж, дараагийнх нь APScheduler-ийн
+#: `max_instances=1`-ээр алгасагдана — ЯГ броker эвдэрсэн үед үнэлгээний
+#: давтамж муудна (UAT round2, O-1). Timeout нь метрикийг «хэмжигдээгүй»
+#: болгоно, худал ногоон БОЛГОХГҮЙ.
+BROKER_PROBE_TIMEOUT = 2.0
 
 #: `breaker_events.kind` → метрик
 KIND_FOR = {API_ERROR_RATE: "api_error", ORDER_REJECT_RATE: "order_reject", WS_DISCONNECTS: "ws_disconnect"}
@@ -73,7 +83,8 @@ class CircuitBreaker:
     async def _daily_loss(self) -> MetricReading:
         limit = self.settings.DAILY_LOSS_LIMIT
         try:
-            account = (await self.broker.get_account()).data
+            async with asyncio.timeout(BROKER_PROBE_TIMEOUT):
+                account = (await self.broker.get_account()).data
         except Exception:
             # Broker хүрэхгүй бол P&L-ийг ТААМАГЛАХГҮЙ: метрик «хэмжигдээгүй»,
             # тиймээс энэ нь halt үүсгэхгүй. Broker-ийн уналт нь өөрийн

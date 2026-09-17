@@ -15,17 +15,28 @@
 
 | Зүйл | Утга |
 |---|---|
-| Backend-ийн орох цэг | `backend/` → `python -m uvicorn app.main:build --factory` |
-| Frontend | `frontend/` → `npm run build`, `ci/nginx.conf`-той nginx-ээр түгээнэ |
-| Reverse proxy | `ci/nginx.conf` — `/api`, `/health`, `/ws` → backend; бусад → `index.html`. `BACKEND=<host:port>` орчноор өгнө (анхдагч `host.docker.internal:8000`) |
+| Бүтэн байршуулалт | репогийн root → `docker compose -f docker-compose.dev.yml up -d --build` |
+| Backend | `backend/Dockerfile` (Python 3.12 + `requirements.lock`); эхлэхдээ `python -m app.migrate` өөрөө ажиллана; `:28000` |
+| Frontend | `frontend/Dockerfile` — `npm ci && npm run build` нь image ДОТОР, статик нь image-д шатсан; nginx `:18080` |
+| Reverse proxy | `ci/nginx.conf` — `/api`, `/health`, `/ws` → backend; бусад → `index.html`. `BACKEND=<host:port>` орчноор дарж бичнэ (анхдагч `backend:8000`) |
+| Тохиргоо | `backend/.env` (`.env.example`-ээс). Байхгүй бол backend ЗОРИУД эхлэхгүй (§7-ийн хязгаарууд анхдагчгүй). Alpaca түлхүүр зөвхөн орчноос |
 | Төлөвийн эх сурвалж | Postgres-ийн `system_state` хүснэгт (**Redis БИШ**) |
 | Хамгийн аюулгүй төлөв | `halted` |
 
-Статикийг ДАНГААР serve хийж болохгүй: UI нь `/api/v1/...` ба `/ws`-ыг нэг
-origin-оос дууддаг тул proxy-гүй байршуулалтад бүх дэлгэц хоосон, deep link
-404 болно (UAT U-1). Мөн `frontend/dist`-ийг **түр зуурын** ажлын хавтаснаас
-mount хийхгүй — хавтас устахад байршуулалт чимээгүй 404 болдог (UAT U-2):
-байнгын checkout эсвэл image дотор шатаасан статикаас түгээ.
+Байршуулалтын ХОЁР дүрэм — хоёулаа UAT-д бодитоор зөрчигдөж байсан:
+
+1. Статикийг ДАНГААР serve хийж болохгүй: UI нь `/api/v1/...` ба `/ws`-ыг нэг
+   origin-оос дууддаг тул proxy-гүй байршуулалтад бүх дэлгэц хоосон, deep
+   link 404 болно (UAT U-1).
+2. `frontend/dist`-ийг **түр зуурын** ажлын хавтаснаас mount ХИЙХГҮЙ (UAT
+   U-2) ба backend-гүйгээр proxy-г host дээрх санамсаргүй порт руу ЗААХГҮЙ
+   (UAT U-4). Дээрх `docker compose … --build` нь хоёуланг нь бүтцээрээ
+   хаадаг: статик image дотор, backend нь compose-ийн service, proxy-ийн
+   анхдагч нь тэр service.
+
+Хөгжүүлэлтийн явцад backend-ийг host дээр ажиллуулах бол:
+`docker compose -f docker-compose.dev.yml up -d postgres redis` +
+`BACKEND=host.docker.internal:8000 docker compose … up -d frontend`.
 
 **Гурван товчийг АНДУУРАХГҮЙ** (LLD §16.3):
 
