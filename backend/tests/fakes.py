@@ -6,6 +6,7 @@ Alpaca руу ХЭЗЭЭ Ч хүрэхгүй — `LiveEgressGuard` нь сүлж
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from decimal import Decimal
 
@@ -212,3 +213,32 @@ def fake_ws_connect(frames):
 
     socket.urls = urls
     return socket, _Connect
+
+
+class FanoutRedis:
+    """Хоёр instance-ийг холбосон process-дотоод pub/sub хуулбар."""
+
+    def __init__(self) -> None:
+        self.queues: list[asyncio.Queue] = []
+
+    async def publish(self, channel: str, data: str) -> None:
+        for queue in self.queues:
+            queue.put_nowait({"type": "pmessage", "channel": channel, "data": data})
+
+    def pubsub(self):
+        queue: asyncio.Queue = asyncio.Queue()
+        self.queues.append(queue)
+        outer = self
+
+        class _PubSub:
+            async def psubscribe(self, pattern: str) -> None:
+                pass
+
+            async def listen(self):
+                while True:
+                    yield await queue.get()
+
+            async def aclose(self) -> None:
+                outer.queues.remove(queue)
+
+        return _PubSub()

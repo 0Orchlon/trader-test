@@ -16,6 +16,7 @@ from app.api.problem import ProblemError
 from app.audit import logging as audit_logging
 from app.broker.models import BrokerRejected, BrokerUnavailable, SystemState
 from app.db import make_sessionmaker
+from app.agents.router import restore_active
 from app.stream.bus import CHANNEL_SYSTEM, EventBus
 from app.system.state import StateMachine
 
@@ -46,6 +47,10 @@ def create_app(
             # Дахин асаалт нь төлөвийг УНШИНА, эхлүүлэхгүй (AC-37).
             row = await machine.ensure_initialised()
             app.state.current_state = row.state
+            # Provider-ийн сонголт БАС дахин асаалтыг давна (U-3, AC-10):
+            # анхдагч руу чимээгүй буцах нь operator-ийн сольсон модель биш
+            # өөр модель шийдвэр гаргах явдал.
+            await restore_active(session, app.state.provider_router)
         stop = await _start_background(app) if background else None
         try:
             yield
@@ -160,6 +165,7 @@ async def _start_background(app: FastAPI):
     """Scheduler + WS ingestion. Зогсоох функц буцаана."""
     import asyncio
 
+    from app.agents.router import follow_switches
     from app.stream.ingest import StalenessMonitor, TradeUpdateIngestor
     from app.system.scheduler import build_scheduler
 
@@ -170,7 +176,12 @@ async def _start_background(app: FastAPI):
     ingestor = TradeUpdateIngestor(
         app.state.sessionmaker, app.state.broker, app.state.bus, monitor
     )
-    tasks = [asyncio.create_task(ingestor.run_forever())]
+    tasks = [
+        asyncio.create_task(ingestor.run_forever()),
+        # Өөр instance-ийн hot-swap-ыг сонсоно (U-3). Redis-гүй үед ч
+        # ажиллана — өөрийн мессежийг дахин буулгах нь idempotent.
+        asyncio.create_task(follow_switches(app.state.bus, app.state.provider_router)),
+    ]
     if app.state.bus.redis is not None:
         tasks.append(asyncio.create_task(app.state.bus.bridge()))
     scheduler = build_scheduler(app)

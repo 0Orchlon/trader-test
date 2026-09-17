@@ -151,6 +151,20 @@ class ProviderRouter:
     def record_success(self, provider_id: str) -> None:
         self.get(provider_id).record_success()
 
+    def adopt(self, role: str, provider_id: str) -> bool:
+        """Өөр instance-ийн (эсвэл өмнөх ажиллагааны) солилтыг хэрэгжүүлнэ.
+
+        `switch()`-ээс ялгаатай нь health-check ХИЙХГҮЙ: солилтыг үүсгэсэн
+        instance аль хэдийн шалгасан, энд дахин шалгах нь нэг үйлдлийн
+        үр дүнг instance бүрд өөр болгоно. Танихгүй provider/role-ийг
+        ЧИМЭЭГҮЙ алгасна — өөр тохиргоотой instance-ийн мессеж энэ
+        process-ийн active-ыг хоослохгүй.
+        """
+        if role not in ROLES or provider_id not in self.adapters:
+            return False
+        self._active[role] = provider_id
+        return True
+
 
 def default_router(*, error_threshold: int) -> ProviderRouter:
     """v1-ийн тохиргоо. Шинэ provider нэмэх нь ЭНД нэг мөр."""
@@ -170,3 +184,64 @@ def default_router(*, error_threshold: int) -> ProviderRouter:
         fallback_id="local-fallback",
         error_threshold=error_threshold,
     )
+
+
+async def follow_switches(bus, router: ProviderRouter) -> None:
+    """`system` сувгийн `provider_switched`-ийг ЭНЭ process-д хэрэгжүүлнэ.
+
+    U-3 (UAT): солилт нь зөвхөн хүсэлт хүлээн авсан process-д үйлчилдэг тул
+    олон instance-тай байршуулалтад оператор provider сольсон ч хүсэлт аль
+    instance-д унахаас хамаарч ХУУЧИН модель ажилласаар байв — AC-10 «ажлыг
+    тасалдуулахгүйгээр солих» нь чимээгүй хагас биелдэг.
+
+    Шинэ тээвэр НЭМЭХГҮЙ: солилт аль хэдийн Redis-ээр бүх instance-д
+    түгээгддэг (LLD §12, AC-14), энэ нь тэр урсгалыг сонсоод router-т
+    буулгана. Өөрийн мессеж эргэж ирэх нь idempotent.
+    """
+    from app.stream.bus import CHANNEL_SYSTEM
+
+    sub = bus.subscribe([CHANNEL_SYSTEM])
+    try:
+        while True:
+            payload = (await sub.get()).payload
+            if payload.get("event") == "provider_switched":
+                router.adopt(str(payload.get("role", "")), str(payload.get("new_provider_id", "")))
+    finally:
+        bus.unsubscribe(sub)
+
+
+#: Дахин асаалтад хэдэн `provider_switched` мөр ухаж харах вэ. Хамгийн сүүлийн
+#: мөр л чухал — хязгаар нь role бүрийн сүүлийнхийг олоход хангалттай бөгөөд
+#: аудитын түүх өсөхөд query тогтмол үнэтэй үлдэнэ.
+_RESTORE_SCAN = 200
+
+
+async def restore_active(session, router: ProviderRouter) -> None:
+    """Дахин асаахад идэвхтэй provider-ийг audit_log-оос сэргээнэ (U-3, AC-10).
+
+    Тусдаа хүснэгт НЭМЭХГҮЙ: солилт аль хэдийн append-only, hash-chain-тай
+    `audit_log`-д бичигддэг (LLD §14) — хоёр дахь эх сурвалж үүсгэх нь тэр
+    хоёрыг зөрүүлэх боломж нээнэ. Түүх хоосон бол анхдагч хэвээр.
+    """
+    from sqlalchemy import select
+
+    from app import models
+
+    rows = (
+        await session.execute(
+            select(models.AuditLog.payload)
+            .where(models.AuditLog.event_type == "provider_switched")
+            .order_by(models.AuditLog.seq.desc())
+            .limit(_RESTORE_SCAN)
+        )
+    ).scalars().all()
+
+    seen: set[str] = set()
+    for payload in rows:
+        role = str((payload or {}).get("role", ""))
+        if role in seen:
+            continue  # илүү шинэ мөр аль хэдийн ялсан
+        if router.adopt(role, str((payload or {}).get("new_provider_id", ""))):
+            seen.add(role)
+            if len(seen) == len(ROLES):
+                return

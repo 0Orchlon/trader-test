@@ -28,11 +28,25 @@ services:
       timeout: 3s
       retries: 20
 
-  # Backend python орчны offline cache дутуу тул frontend-ийн статик
-  # `dist/`-ийг л энд serve хийнэ (`npm run build` урьдчилж хийгдсэн байх ёстой).
+  # Frontend-ийн статик (`npm run build` урьдчилж хийгдсэн байх ёстой) +
+  # reverse proxy. Статикийг ДАНГААР нь serve хийхэд `/api/v1/*` ба
+  # deep link 404 болж UI бүхэлдээ хоосон гарч байв (UAT U-1) — тиймээс
+  # `ci/nginx.conf` нь `/api`, `/health`, `/ws`-ыг backend руу дамжуулж,
+  # бусдыг `index.html` руу унагана.
+  #
+  # `BACKEND` нь backend ХААНА ажиллаж байгаа хаяг: анхдагчаар host дээрх
+  # uvicorn (runbook §0). Контейнерт байршуулсан үед compose-ийн service
+  # нэрээр (`BACKEND=backend:8000`) дарж бичнэ.
   frontend:
     image: nginx:alpine
     ports:
       - "18080:80"
+    environment:
+      BACKEND: ${BACKEND:-host.docker.internal:8000}
+      # nginx-ийн `$host`, `$uri` зэргийг envsubst иддэг — зөвхөн BACKEND.
+      NGINX_ENVSUBST_FILTER: BACKEND
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./ci/nginx.conf:/etc/nginx/templates/default.conf.template:ro

@@ -531,6 +531,21 @@ async def test_switch_endpoint_swaps_and_audits(client, db_session):
     assert len(rows) == 1
 
 
+async def test_switch_survives_a_restart(client, engine, settings, bus, broker):
+    """U-3 / AC-10: дахин асаахад солилт мартагдахгүй.
+
+    UAT-д `default_router()` үргэлж `claude-mcp`-ээр эхэлдэг тул restart нь
+    operator-ийн шийдвэрийг чимээгүй буцаадаг байв.
+    """
+    from app.main import create_app
+
+    await client.post("/api/v1/providers/research/switch", json={"provider_id": "openai-fc"})
+
+    restarted = create_app(engine=engine, settings=settings, broker=broker, bus=bus)
+    async with restarted.router.lifespan_context(restarted):
+        assert restarted.state.provider_router.active_id("research") == "openai-fc"
+
+
 async def test_switch_endpoint_refuses_an_unknown_provider(client):
     response = await client.post(
         "/api/v1/providers/research/switch", json={"provider_id": "nope"}

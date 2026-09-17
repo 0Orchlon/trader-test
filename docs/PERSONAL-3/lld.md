@@ -723,6 +723,23 @@ Restart БАЙХГҮЙ (NFR-4). Session нь эхлэхдээ adapter-ийн л�
 **дараагийн** session-д хүчинтэй. Энэ нь «нэг шийдвэр хоёр модель» гэсэн
 будлианаас сэргийлнэ, `agent_decisions.provider` нь үргэлж нэг утгатай.
 
+**Засвар (UAT U-3, 2026-09-18).** Дээрх reference swap нь ЗӨВХӨН хүсэлт
+хүлээн авсан process-д үйлчилдэг байв: олон instance + Redis fan-out бүхий
+байршуулалтад `:28000`-д сольсон нь `:28001`-д хүрэхгүй, дахин асаахад
+`claude-mcp` руу буцдаг — AC-10 чимээгүй хагас биелдэг. Хоёр нэмэлт, шинэ
+хадгалалтгүйгээр:
+
+- `follow_switches(bus, router)` — `system` сувгийн `provider_switched`-ийг
+  сонсоод `router.adopt(role, new_provider_id)` хийнэ (health check ДАХИН
+  хийхгүй: үүсгэсэн instance аль хэдийн шалгасан; танихгүй provider/role
+  чимээгүй алгасагдана). Тээвэр нь §12-ийн Redis pub/sub — шинэ суваг үгүй.
+- `restore_active(session, router)` — lifespan-д `audit_log`-ийн хамгийн
+  сүүлийн `provider_switched`-ээс идэвхтэйг сэргээнэ. Тусдаа хүснэгт
+  НЭМЭХГҮЙ: append-only, hash-chain-тай аудит нь аль хэдийн эрх бүхий эх
+  сурвалж (§14) — хоёр дахь эх нь зөрөх боломж нээнэ.
+
+Нислэг дунд байгаа дуудалтын дүрэм ӨӨРЧЛӨГДӨӨГҮЙ.
+
 ### 12.3 Fallback бодлого
 
 Идэвхтэй provider `PROVIDER_ERROR_THRESHOLD` удаа дараалан унавал:

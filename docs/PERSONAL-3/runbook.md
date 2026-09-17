@@ -16,9 +16,16 @@
 | Зүйл | Утга |
 |---|---|
 | Backend-ийн орох цэг | `backend/` → `python -m uvicorn app.main:build --factory` |
-| Frontend | `frontend/` → `npm run build`, статикаар түгээнэ |
+| Frontend | `frontend/` → `npm run build`, `ci/nginx.conf`-той nginx-ээр түгээнэ |
+| Reverse proxy | `ci/nginx.conf` — `/api`, `/health`, `/ws` → backend; бусад → `index.html`. `BACKEND=<host:port>` орчноор өгнө (анхдагч `host.docker.internal:8000`) |
 | Төлөвийн эх сурвалж | Postgres-ийн `system_state` хүснэгт (**Redis БИШ**) |
 | Хамгийн аюулгүй төлөв | `halted` |
+
+Статикийг ДАНГААР serve хийж болохгүй: UI нь `/api/v1/...` ба `/ws`-ыг нэг
+origin-оос дууддаг тул proxy-гүй байршуулалтад бүх дэлгэц хоосон, deep link
+404 болно (UAT U-1). Мөн `frontend/dist`-ийг **түр зуурын** ажлын хавтаснаас
+mount хийхгүй — хавтас устахад байршуулалт чимээгүй 404 болдог (UAT U-2):
+байнгын checkout эсвэл image дотор шатаасан статикаас түгээ.
 
 **Гурван товчийг АНДУУРАХГҮЙ** (LLD §16.3):
 
