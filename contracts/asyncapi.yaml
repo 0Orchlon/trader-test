@@ -24,6 +24,10 @@ servers:
 channels:
   ticks:
     address: "ticks:{symbol}"
+    description: |
+      **v1-д нийтлэгддэггүй — нөөцлөгдсөн суваг.** Quote нь REST-ээс
+      (`GET /market/quote/{symbol}`) ирдэг; market-data WS нь дараагийн
+      хувилбарын ажил. Суваг нь backpressure бодлогын жишиг болж үлдэнэ.
     parameters:
       symbol:
         description: Alpaca symbol

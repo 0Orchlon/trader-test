@@ -96,11 +96,20 @@ export function ManualTicketPage() {
     retry: false,
   });
 
-  const notional = useMemo(() => {
+  // Лавлах үнэ нь `app/risk/rules.py::reference_price`-тай ЯГ ИЖИЛ дараалал:
+  // limit үнэ бичигдсэн бол ТЭР, эс бөгөөс сүүлийн quote. Өмнө нь UI үргэлж
+  // quote-ыг авдаг байсан тул limit order дээр дэлгэцийн дүн ба R9-ийн шалгах
+  // дүн зөрдөг байв (N-1).
+  const reference = useMemo(() => {
+    if (orderType === 'limit' && limitPrice) return { price: limitPrice, label: 'limit үнэ' };
     const last = quote.data?.quote.last;
-    if (!qty || !last) return null;
-    return multiply(qty, last);
-  }, [qty, quote.data]);
+    return last ? { price: last, label: 'сүүлийн үнэ' } : null;
+  }, [orderType, limitPrice, quote.data]);
+
+  const notional = useMemo(() => {
+    if (!qty || !reference) return null;
+    return multiply(qty, reference.price);
+  }, [qty, reference]);
 
   const body: ManualOrderRequest = useMemo(
     () => ({
@@ -236,8 +245,8 @@ export function ManualTicketPage() {
             <Group gap={8}>
               <Text size="sm" data-testid="ticket-notional">
                 Тооцоолсон notional:{' '}
-                <b>{quote.isError ? 'quote байхгүй' : formatMoney(notional)}</b>
-                {quote.data ? ` (сүүлийн үнэ ${formatMoney(quote.data.quote.last)})` : ''}
+                <b>{quote.isError && !reference ? 'quote байхгүй' : formatMoney(notional)}</b>
+                {reference ? ` (${reference.label} ${formatMoney(reference.price)})` : ''}
                 {position ? ` · одоогийн позиц ${position.qty} ш` : ''}
               </Text>
               {quote.data?.stale ? (

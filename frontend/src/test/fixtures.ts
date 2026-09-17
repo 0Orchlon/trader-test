@@ -44,6 +44,31 @@ export const systemState: SystemStateEnvelope = {
   ],
 };
 
+/** Broker хүрэхгүй: хоёр метрик хэмжигдээгүй (B-1). */
+export const unmeasuredBreakerState: SystemStateEnvelope = {
+  ...systemState,
+  system_state: 'halted',
+  state: 'halted',
+  reason: 'Broker хүрэхгүй',
+  changed_by: 'circuit_breaker',
+  breaker_metrics: [
+    {
+      metric: 'daily_loss',
+      value: 'unmeasured',
+      limit_name: 'DAILY_LOSS_LIMIT',
+      limit_value: '-2000.00',
+      tripped: false,
+    },
+    {
+      metric: 'api_error_rate',
+      value: 'unmeasured',
+      limit_name: 'ERROR_RATE_LIMIT',
+      limit_value: '0.05',
+      tripped: false,
+    },
+  ],
+};
+
 export const haltedState: SystemStateEnvelope = {
   ...systemState,
   system_state: 'halted',

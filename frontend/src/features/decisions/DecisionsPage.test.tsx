@@ -104,6 +104,20 @@ describe('DecisionsPage — tool call хүснэгтийн source', () => {
     expect(screen.getByTestId('decision-grounding')).not.toHaveTextContent('УНАСАН');
   });
 
+  it('шалгасан тооны ТОО харагдана — 0 нь «дамжсан» гэж ногоон гарахгүй (N-4)', async () => {
+    renderWith(['alpaca_paper'], { passed: true, unverified_claims: [], checked_claims: 0 });
+    await openDetail();
+    await waitFor(() => expect(screen.getByTestId('decision-grounding')).toBeInTheDocument());
+    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('0 тоо шалгав');
+  });
+
+  it('шалгасан тоо олон бол мөн ил', async () => {
+    renderWith(['alpaca_paper'], { passed: true, unverified_claims: [], checked_claims: 12 });
+    await openDetail();
+    await waitFor(() => expect(screen.getByTestId('decision-grounding')).toBeInTheDocument());
+    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('12 тоо шалгав');
+  });
+
   it('холимог source бол хүснэгт ХАРАГДАХГҮЙ, ил анхааруулга гарна', async () => {
     renderWith(['alpaca_paper', 'backtest']);
     await openDetail();

@@ -172,6 +172,13 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
                 ? 'дамжсан'
                 : 'УНАСАН'}
           </Text>
+          {/* Шалгасан тооны ТОО. «0 тоо шалгав» ба «12 тоо шалгав» хоёр
+              ижилхэн ногоон харагдах нь шалгаагүйг шалгасан мэт болгоно (N-4). */}
+          {decision.grounding.not_run ? null : (
+            <Text size="xs" c="dimmed" data-testid="grounding-checked-claims">
+              {decision.grounding.checked_claims ?? 0} тоо шалгав
+            </Text>
+          )}
           {(decision.grounding.unverified_claims ?? []).length > 0 ? (
             <Text size="sm">
               Цитат өгөгдөлд ОЛДООГҮЙ тоо:{' '}

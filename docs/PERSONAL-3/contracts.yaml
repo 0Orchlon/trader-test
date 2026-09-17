@@ -1774,6 +1774,10 @@ components:
               description: |
                 Circuit breaker-ийн метрик бүрийн одоогийн байдал. `activate`
                 энэ жагсаалтыг ДАХИН хэмжиж шийднэ — хадгалагдсан туг биш.
+
+                Хэмжигдээгүй метрик нь `value: "unmeasured"` гэж ИЛ гарна
+                (broker хүрэхгүй, эсвэл цонхонд нэг ч үйл явдал байхгүй).
+                Хэмжигдээгүйг `0` гэж харуулахгүй.
               items:
                 type: object
                 required: [metric, value, limit_name, limit_value, tripped]
@@ -1783,6 +1787,9 @@ components:
                     enum: [daily_loss, api_error_rate, order_reject_rate, ws_disconnects]
                   value:
                     type: string
+                    description: |
+                      Тоон утга эсвэл `unmeasured`. `unmeasured` үед `tripped`
+                      нь ҮРГЭЛЖ `false` — хэмжээгүй зүйл халт үүсгэхгүй.
                   limit_name:
                     type: string
                   limit_value:
@@ -1871,6 +1878,10 @@ servers:
 channels:
   ticks:
     address: "ticks:{symbol}"
+    description: |
+      **v1-д нийтлэгддэггүй — нөөцлөгдсөн суваг.** Quote нь REST-ээс
+      (`GET /market/quote/{symbol}`) ирдэг; market-data WS нь дараагийн
+      хувилбарын ажил. Суваг нь backpressure бодлогын жишиг болж үлдэнэ.
     parameters:
       symbol:
         description: Alpaca symbol

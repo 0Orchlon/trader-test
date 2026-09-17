@@ -77,7 +77,8 @@ class CircuitBreaker:
         except Exception:
             # Broker хүрэхгүй бол P&L-ийг ТААМАГЛАХГҮЙ: метрик «хэмжигдээгүй»,
             # тиймээс энэ нь halt үүсгэхгүй. Broker-ийн уналт нь өөрийн
-            # метрикээр (api_error_rate) баригдана.
+            # метрикээр (`api_error_rate`) баригдана — тэр тоолуурыг
+            # `AlpacaAdapter.bind_api_reporter` (LLD §7) ахиулна.
             return MetricReading(DAILY_LOSS, "unmeasured", "DAILY_LOSS_LIMIT", money_str(limit), False)
         if account.last_equity is None:
             return MetricReading(DAILY_LOSS, "unmeasured", "DAILY_LOSS_LIMIT", money_str(limit), False)
@@ -89,14 +90,19 @@ class CircuitBreaker:
     async def _rate(self, metric: str, limit: Decimal, limit_name: str) -> MetricReading:
         events = await self._events(KIND_FOR[metric])
         total = len(events)
+        if not total:
+            # Цонхонд нэг ч дуудалт байхгүй бол хувь гэж БАЙХГҮЙ. `0.0000`
+            # гэж хэлэх нь `daily_loss`-ийн `unmeasured`-тай ижил худал
+            # ногоон болно (B-1, хавсралт 10).
+            return MetricReading(metric, "unmeasured", limit_name, str(limit), False)
         bad = sum(1 for e in events if not e.ok)
-        rate = Decimal(bad) / Decimal(total) if total else Decimal("0")
+        rate = Decimal(bad) / Decimal(total)
         return MetricReading(
             metric,
             str(rate.quantize(Decimal("0.0001"))),
             limit_name,
             str(limit),
-            total > 0 and rate > limit,
+            rate > limit,
         )
 
     async def _ws_disconnects(self) -> MetricReading:

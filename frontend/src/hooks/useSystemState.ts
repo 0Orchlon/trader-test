@@ -47,7 +47,10 @@ export function useLiveSocket() {
       lastMessageAt.current = Date.now();
       setLastSeen(new Date().toISOString());
       const channel = message.channel;
-      if (channel === 'system') {
+      // Heartbeat нь «холболт амьд» гэсэн үг, «төлөв өөрчлөгдсөн» гэсэн үг
+      // БИШ. Түүнийг invalidation гэж үзвэл сул таб бүр минутад 30 удаа
+      // `GET /system/state` (тэр бүр нь broker-ийн `get_account`) татна (N-2).
+      if (channel === 'system' && message.payload?.event !== 'heartbeat') {
         void queryClient.invalidateQueries({ queryKey: systemStateKey });
         void queryClient.invalidateQueries({ queryKey: ['providers'] });
       }

@@ -81,6 +81,19 @@ def create_app(
     if hasattr(broker, "bind_system_state"):
         broker.bind_system_state(lambda: app.state.current_state)
 
+    # `api_error_rate`-ийн цорын ганц эх сурвалж (LLD §15.2): broker-ийн REST
+    # дуудалт бүрийн үр дүн `breaker_events`-д. Хүсэлтийн session-ээс ТУСДАА
+    # session — унасан дуудалтын rollback нь тоолуурыг ч арчихгүй.
+    if hasattr(broker, "bind_api_reporter"):
+        async def report_api_call(ok: bool) -> None:
+            from app.risk.breaker import record
+
+            async with sessionmaker() as session:
+                await record(session, "api_error", ok=ok)
+                await session.commit()
+
+        broker.bind_api_reporter(report_api_call)
+
     from app.api import (
         routes_agents,
         routes_approvals,

@@ -15,7 +15,13 @@ import { ModeBanner } from './ModeBanner';
 import { StateBar } from './StateBar';
 import { StalenessBanner } from './AppShell';
 import { renderWithProviders } from '@/test/render';
-import { haltedState, liveState, systemState, windingDownState } from '@/test/fixtures';
+import {
+  haltedState,
+  liveState,
+  systemState,
+  unmeasuredBreakerState,
+  windingDownState,
+} from '@/test/fixtures';
 
 describe('ModeBanner (AC-20)', () => {
   it('paper горимыг ил тэмдэглэнэ', () => {
@@ -148,6 +154,29 @@ describe('StateBar (AC-38)', () => {
 
     await waitFor(() => expect(screen.getByTestId('breaker-metrics')).toBeInTheDocument());
     expect(screen.getByTestId('breaker-metrics')).toHaveTextContent('daily_loss');
+    vi.unstubAllGlobals();
+  });
+
+  it('хэмжигдээгүй метрик нь «хэвийн» гэж харагдахгүй (B-1)', async () => {
+    const problem = {
+      status: 409,
+      code: 'confirmation_required',
+      title: 'x',
+      type: 'x',
+      confirmation: { token: 't', prompt: 'Идэвхжүүлэх үү?', expires_at: 'x' },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(problem), { status: 409 })),
+    );
+
+    renderWithProviders(<StateBar state={unmeasuredBreakerState} />);
+    await userEvent.click(screen.getByTestId('activate'));
+
+    await waitFor(() => expect(screen.getByTestId('breaker-metrics')).toBeInTheDocument());
+    const row = screen.getByTestId('breaker-metric-api_error_rate');
+    expect(row).toHaveTextContent('ХЭМЖИГДЭЭГҮЙ');
+    expect(row).not.toHaveTextContent('0.0000');
     vi.unstubAllGlobals();
   });
 });

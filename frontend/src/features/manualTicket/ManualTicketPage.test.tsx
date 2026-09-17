@@ -118,6 +118,20 @@ describe('ManualTicketPage', () => {
     );
   });
 
+  it('limit order дээр лавлах үнэ нь LIMIT үнэ — Risk-ийн R9-тэй ижил (N-1)', async () => {
+    // `app/risk/rules.py::reference_price` нь `limit_price` байвал ТҮҮНИЙГ
+    // авна. UI үргэлж `quote.last` авдаг байсан тул дэлгэц дээрх дүн ба
+    // backend-ийн шалгах дүн зөрж, §16.5-ын амлалт худал болж байв.
+    renderTicket();
+    await userEvent.type(screen.getByTestId('ticket-symbol'), 'AAPL');
+    await userEvent.type(screen.getByTestId('ticket-qty'), '10');
+    await userEvent.type(screen.getByTestId('ticket-limit-price'), '300.00');
+    await waitFor(() =>
+      expect(screen.getByTestId('ticket-notional')).toHaveTextContent('$3,000.00'),
+    );
+    expect(screen.getByTestId('ticket-notional')).toHaveTextContent('limit үнэ');
+  });
+
   it('хуучирсан quote нь ИЛ тэмдэгтэй', async () => {
     renderTicket(systemState, { '/api/v1/market/quote/': { body: staleQuote } });
     await userEvent.type(screen.getByTestId('ticket-symbol'), 'AAPL');

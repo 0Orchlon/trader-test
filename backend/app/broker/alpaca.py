@@ -84,6 +84,7 @@ class AlpacaAdapter:
         self._client = client
         self._owns_client = client is None
         self._system_state_provider = lambda: SystemState.HALTED
+        self._api_reporter = None
 
     # --- дэд бүтэц ---
 
@@ -94,6 +95,20 @@ class AlpacaAdapter:
     def bind_system_state(self, provider) -> None:
         """Envelope-д бичих `system_state`-ийн эх сурвалж (LLD §4)."""
         self._system_state_provider = provider
+
+    def bind_api_reporter(self, reporter) -> None:
+        """`api_error_rate`-ийн ЭХ СУРВАЛЖ (LLD §15.2, B-1).
+
+        REST дуудалт БҮР (уншилт, `submit_order`, `cancel_order`) үр дүнгээ
+        энд мэдэгдэнэ. Тоолуургүй метрик нь «0.0000 · унаагүй» гэж ногоон
+        харагддаг байв — Alpaca бүрэн унасан үед ч.
+        """
+        self._api_reporter = reporter
+
+    async def _report(self, ok: bool) -> None:
+        """Нэг ЛОГИК дуудалт = нэг мөр (retry-ийн оролдлогууд БИШ)."""
+        if self._api_reporter is not None:
+            await self._api_reporter(ok)
 
     def _client_or_new(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -121,11 +136,15 @@ class AlpacaAdapter:
             try:
                 response = await self._client_or_new().get(url, headers=self._headers, **kwargs)
                 response.raise_for_status()
-                return response.json(parse_float=Decimal)
+                payload = response.json(parse_float=Decimal)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
                 last_exc = exc
                 if attempt < READ_ATTEMPTS - 1:
                     await asyncio.sleep(0.01 * (2**attempt))
+            else:
+                await self._report(True)
+                return payload
+        await self._report(False)
         raise BrokerUnavailable(f"Alpaca хүрэхгүй: {url}") from last_exc
 
     # --- унших зам ---
@@ -215,12 +234,15 @@ class AlpacaAdapter:
                 )
                 response.raise_for_status()
             except httpx.HTTPError as retry_exc:
+                await self._report(False)
                 raise BrokerUnavailable("submit_order timeout, дахин илгээлт амжилтгүй") from (
                     retry_exc or exc
                 )
         except httpx.HTTPError as exc:
             # Өөр алдаанд retry БАЙХГҮЙ.
+            await self._report(False)
             raise BrokerUnavailable(f"submit_order амжилтгүй: {exc}") from exc
+        await self._report(True)
         return self._map_order(response.json(parse_float=Decimal))
 
     async def cancel_order(self, broker_order_id: str) -> None:
@@ -232,7 +254,9 @@ class AlpacaAdapter:
             if response.status_code not in (200, 204, 207):
                 response.raise_for_status()
         except httpx.HTTPError as exc:
+            await self._report(False)
             raise BrokerUnavailable(f"cancel_order амжилтгүй: {exc}") from exc
+        await self._report(True)
 
     # --- буулгалт ---
 

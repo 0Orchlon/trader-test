@@ -193,12 +193,23 @@ function BreakerMetrics({ state }: { state: SystemStateEnvelope | undefined }) {
       <Text size="sm" fw={600}>
         Circuit breaker-ийн одоогийн метрик
       </Text>
-      {metrics.map((metric) => (
-        <Text key={metric.metric} size="xs" c={metric.tripped ? 'red.6' : 'dimmed'}>
-          {metric.metric}: {metric.value} (хязгаар {metric.limit_name} {metric.limit_value})
-          {metric.tripped ? ' — УНАСАН' : ''}
-        </Text>
-      ))}
+      {metrics.map((metric) => {
+        // Хэмжигдээгүйг тоо мэт харуулах нь худал ногоон: operator
+        // «api_error_rate 0.0000 — хэвийн» гэж уншина (B-1, хавсралт 10).
+        const unmeasured = metric.value === 'unmeasured';
+        return (
+          <Text
+            key={metric.metric}
+            size="xs"
+            data-testid={`breaker-metric-${metric.metric}`}
+            c={metric.tripped ? 'red.6' : unmeasured ? 'orange.7' : 'dimmed'}
+          >
+            {metric.metric}: {unmeasured ? 'ХЭМЖИГДЭЭГҮЙ' : metric.value} (хязгаар{' '}
+            {metric.limit_name} {metric.limit_value})
+            {metric.tripped ? ' — УНАСАН' : ''}
+          </Text>
+        );
+      })}
     </Stack>
   );
 }

@@ -1271,10 +1271,18 @@ export interface components {
             /**
              * @description Circuit breaker-ийн метрик бүрийн одоогийн байдал. `activate`
              *     энэ жагсаалтыг ДАХИН хэмжиж шийднэ — хадгалагдсан туг биш.
+             *
+             *     Хэмжигдээгүй метрик нь `value: "unmeasured"` гэж ИЛ гарна
+             *     (broker хүрэхгүй, эсвэл цонхонд нэг ч үйл явдал байхгүй).
+             *     Хэмжигдээгүйг `0` гэж харуулахгүй.
              */
             breaker_metrics?: {
                 /** @enum {string} */
                 metric: "daily_loss" | "api_error_rate" | "order_reject_rate" | "ws_disconnects";
+                /**
+                 * @description Тоон утга эсвэл `unmeasured`. `unmeasured` үед `tripped`
+                 *     нь ҮРГЭЛЖ `false` — хэмжээгүй зүйл халт үүсгэхгүй.
+                 */
                 value: string;
                 limit_name: string;
                 limit_value: string;

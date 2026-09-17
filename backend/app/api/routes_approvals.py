@@ -70,6 +70,16 @@ async def get_approvals(
     )
 
 
+def locked_approval_stmt(approval_id: uuid.UUID):
+    """Мөрийг LOCK-лож уншина (LLD §15.3).
+
+    `session.get` + версь харьцуулалт нь атом биш: зэрэгцээ хоёр `approve`
+    хоёулаа шалгалтыг давна. Төлөвийн машинтай ИЖИЛ хэв маяг — SQLite дээр
+    заалт хаягдана, Postgres дээр мөрийн lock болно.
+    """
+    return select(models.Approval).where(models.Approval.id == approval_id).with_for_update()
+
+
 async def _locked(session, approval_id: uuid.UUID, expected_version: int) -> models.Approval:
     """Мөрийг олж, шийдэгдээгүй + хугацаа дуусаагүй + версь таарсныг шалгана.
 
@@ -79,7 +89,7 @@ async def _locked(session, approval_id: uuid.UUID, expected_version: int) -> mod
     төлөвөөс ДЭЭГҮҮР: `expired` мөрд «версийн зөрүү» гэж хэлэх нь шалтгааныг
     нуух болно.
     """
-    row = await session.get(models.Approval, approval_id)
+    row = (await session.execute(locked_approval_stmt(approval_id))).scalar_one_or_none()
     if row is None:
         raise problem("not_found", 404, f"approval олдсонгүй: {approval_id}")
     if row.version != expected_version:
