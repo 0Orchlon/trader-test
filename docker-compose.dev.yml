@@ -27,3 +27,12 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+
+  # Backend python орчны offline cache дутуу тул frontend-ийн статик
+  # `dist/`-ийг л энд serve хийнэ (`npm run build` урьдчилж хийгдсэн байх ёстой).
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "18080:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
