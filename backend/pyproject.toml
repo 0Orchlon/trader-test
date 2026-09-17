@@ -12,6 +12,9 @@ dependencies = [
     "aiosqlite==0.20.0",
     "asyncpg==0.30.0",
     "httpx==0.28.1",
+    # Alpaca-ийн `/stream` trade-update WS. uvicorn[standard]-аар дамжин
+    # аль хэдийн суудаг ч, ШУУД ашиглаж байгаа тул ил зарлана.
+    "websockets==17.1",
     "redis==5.2.1",
     "apscheduler==3.11.0",
     "pyyaml==6.0.2",

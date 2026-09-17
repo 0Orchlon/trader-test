@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: PERSONAL-3 Alpaca Trading System — Operator API
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: Proprietary — PERSONAL-3 operator only
     identifier: LicenseRef-PERSONAL-3-Proprietary
@@ -1802,10 +1802,28 @@ components:
             - approval_expired
             - version_conflict
             - broker_unavailable
+            - broker_rejected
             - provider_unavailable
             - not_found
+            - invalid_request
         detail:
           type: string
+        broker_code:
+          type: string
+          description: >-
+            Зөвхөн `broker_rejected` үед. Alpaca-ийн алдааны код
+            (ж: `42210000` — wash trade). Broker ХАРИУЛСАН гэдгийн нотолгоо.
+        errors:
+          type: array
+          description: Зөвхөн `invalid_request` үед. Унасан талбар тус бүр.
+          items:
+            type: object
+            required: [loc, msg]
+            properties:
+              loc:
+                type: string
+              msg:
+                type: string
         risk:
           $ref: "#/components/schemas/RiskEvaluation"
         confirmation:

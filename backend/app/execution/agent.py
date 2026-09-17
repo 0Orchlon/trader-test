@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import models
 from app.audit.chain import AuditChain
 from app.broker.models import (
+    BrokerRejected,
     BrokerUnavailable,
     Origin,
     OrderStatus,
@@ -86,6 +87,15 @@ class ExecutionAgent:
         # 3) Alpaca руу.
         try:
             broker_order = await self.broker.submit_order(order)
+        except BrokerRejected as exc:
+            # Broker-ийн ШУУД татгалзал нь trade-update ХЭЗЭЭ Ч үүсгэхгүй
+            # тул WS зам түүнийг тоолохгүй. Энд тоолохгүй бол дараалсан
+            # татгалзал breaker-ийг хэзээ ч унагаахгүй (LLD §15.2).
+            from app.risk.breaker import record
+
+            await record(self.session, "order_reject", ok=False)
+            await self._fail(row, f"broker_rejected:{exc.broker_code or exc.status}")
+            raise
         except Exception as exc:
             await self._fail(row, type(exc).__name__)
             raise

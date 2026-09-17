@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from typing import Any
@@ -19,6 +20,7 @@ import httpx
 from app.broker.models import (
     Account,
     BrokerOrder,
+    BrokerRejected,
     BrokerUnavailable,
     Envelope,
     OrderSide,
@@ -41,6 +43,12 @@ from app.util.time import now_utc, parse_iso
 DATA_HOST = "data.alpaca.markets"
 READ_ATTEMPTS = 3
 
+#: Alpaca-ийн `POST /v2/orders`-д броker-ийн ТАТГАЛЗАЛ гэж үзэх статусууд.
+#: 403 = wash trade / buying power, 422 = хүчингүй параметр. Бүгд «Alpaca
+#: хариулсан» гэсэн үг тул `BrokerUnavailable` БИШ. 401 (түлхүүр), 429
+#: (rate limit), 5xx нь ЖИНХЭНЭ хүрэхгүй байдал — тэднийг оруулахгүй.
+REJECT_STATUSES = frozenset({400, 403, 409, 422})
+
 #: Alpaca-ийн order статусыг домэйны статус руу буулгах хүснэгт. Таарахгүй
 #: статусыг ТААМАГЛАХГҮЙ — `failed` гэж тэмдэглээд ил үлдээнэ.
 _STATUS_MAP = {
@@ -55,6 +63,18 @@ _STATUS_MAP = {
     "rejected": OrderStatus.REJECTED,
     "done_for_day": OrderStatus.EXPIRED,
 }
+
+
+def _alpaca_error(response: httpx.Response) -> tuple[str | None, str]:
+    """Alpaca-ийн алдааны бие → `(code, message)`. Задлагдахгүй бол түүхийгээр."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, response.text or f"HTTP {response.status_code}"
+    if not isinstance(payload, dict):
+        return None, str(payload)
+    code = payload.get("code")
+    return (str(code) if code is not None else None), str(payload.get("message", payload))
 
 
 def _dec(value: Any) -> Decimal:
@@ -72,6 +92,7 @@ class AlpacaAdapter:
         api_secret: str | None,
         client: httpx.AsyncClient | None = None,
         stale_after_seconds: int = 5,
+        ws_connect=None,
     ) -> None:
         self.mode = mode
         self.host = broker_host(mode)
@@ -83,6 +104,7 @@ class AlpacaAdapter:
         }
         self._client = client
         self._owns_client = client is None
+        self._ws_connect = ws_connect
         self._system_state_provider = lambda: SystemState.HALTED
         self._api_reporter = None
 
@@ -233,17 +255,36 @@ class AlpacaAdapter:
                     "/v2/orders", json=body, headers=self._headers
                 )
                 response.raise_for_status()
+            except httpx.HTTPStatusError as retry_exc:
+                # Дахин илгээлтэд Alpaca ХАРИУЛСАН — татгалзал ч байж болно.
+                raise await self._submit_error(retry_exc) from retry_exc
             except httpx.HTTPError as retry_exc:
                 await self._report(False)
                 raise BrokerUnavailable("submit_order timeout, дахин илгээлт амжилтгүй") from (
                     retry_exc or exc
                 )
+        except httpx.HTTPStatusError as exc:
+            # Alpaca ХАРИУЛСАН — түүнийг «хүрэхгүй» гэж хэлэх нь худал
+            # оношилгоо (N-3). Retry энд ч БАЙХГҮЙ.
+            raise await self._submit_error(exc) from exc
         except httpx.HTTPError as exc:
-            # Өөр алдаанд retry БАЙХГҮЙ.
+            # Сүлжээний давхарга — хариу огт ирээгүй.
             await self._report(False)
             raise BrokerUnavailable(f"submit_order амжилтгүй: {exc}") from exc
         await self._report(True)
         return self._map_order(response.json(parse_float=Decimal))
+
+    async def _submit_error(self, exc: httpx.HTTPStatusError) -> Exception:
+        """HTTP статус → татгалзал эсвэл уналт (N-3, LLD §15.2)."""
+        status = exc.response.status_code
+        if status not in REJECT_STATUSES:
+            await self._report(False)
+            return BrokerUnavailable(f"submit_order амжилтгүй: {exc}")
+        # Хариулсан broker нь АМЬД: `api_error_rate` нь хүрэхгүй байдлын
+        # метрик тул татгалзал түүнийг ахиулахгүй.
+        await self._report(True)
+        code, message = _alpaca_error(exc.response)
+        return BrokerRejected(message, broker_code=code, status=status)
 
     async def cancel_order(self, broker_order_id: str) -> None:
         check_egress(self.base_url + f"/v2/orders/{broker_order_id}")
@@ -294,10 +335,68 @@ class AlpacaAdapter:
             raw=raw,
         )
 
-    # --- урсгалууд (WS ingestion нь app.stream-д) ---
+    # --- урсгалууд ---
 
     async def stream_market_data(self, symbols: list[str]) -> AsyncIterator[Tick]:  # pragma: no cover
-        raise NotImplementedError("app.stream.ingest нь WS холболтыг эзэмшинэ")
+        raise NotImplementedError("market-data урсгал энэ хувилбарт холбогдоогүй")
+        yield  # энэ мөр нь методыг async generator болгоно (хүрэхгүй)
 
-    async def stream_trade_updates(self) -> AsyncIterator[TradeUpdate]:  # pragma: no cover
-        raise NotImplementedError("app.stream.ingest нь WS холболтыг эзэмшинэ")
+    @property
+    def stream_url(self) -> str:
+        return f"wss://{self.host}/stream"
+
+    async def stream_trade_updates(self) -> AsyncIterator[TradeUpdate]:
+        """Alpaca-ийн `trade_updates` суваг (docs «Websocket Streaming»).
+
+        Дараалал: `auth` → `authorization`/`authorized` → `listen` →
+        `listening` → үйл явдлууд. Гажсан аль ч алхам нь `BrokerUnavailable`
+        — «чимээгүй хүлээх» холболт нь хамгийн аюултай хэлбэр (LLD §12).
+
+        paper нь frame-ийг **binary**-ээр илгээдэг тул bytes ч, str ч
+        ирж болно; `json.loads` хоёуланг нь уншина.
+        """
+        if not self._headers["APCA-API-KEY-ID"] or not self._headers["APCA-API-SECRET-KEY"]:
+            raise BrokerUnavailable("Alpaca-ийн түлхүүр байхгүй — WS нээгдэхгүй")
+        url = self.stream_url
+        check_egress(url)
+        async with self._connect(url) as socket:
+            await socket.send(
+                json.dumps(
+                    {
+                        "action": "auth",
+                        "key": self._headers["APCA-API-KEY-ID"],
+                        "secret": self._headers["APCA-API-SECRET-KEY"],
+                    }
+                )
+            )
+            listening = False
+            async for frame in socket:
+                message = json.loads(frame)
+                if message.get("action") == "error":
+                    raise BrokerUnavailable(
+                        f"Alpaca WS алдаа: {message.get('data', {}).get('error_message')}"
+                    )
+                stream = message.get("stream")
+                if stream == "authorization":
+                    status = message.get("data", {}).get("status")
+                    if status != "authorized":
+                        raise BrokerUnavailable(f"Alpaca WS authorization: {status}")
+                    if not listening:
+                        listening = True
+                        await socket.send(
+                            json.dumps(
+                                {"action": "listen", "data": {"streams": ["trade_updates"]}}
+                            )
+                        )
+                elif stream == "trade_updates":
+                    yield self.map_trade_update(message.get("data", {}))
+                # Бусад суваг (`listening`, …) нь арилжааны үйл явдал БИШ —
+                # ТААМАГЛАХГҮЙ, чимээгүй алгасна.
+
+    def _connect(self, url: str):
+        """WS холболт. Тест нь `ws_connect`-оор оронд нь тавина."""
+        if self._ws_connect is not None:
+            return self._ws_connect(url)
+        from websockets.asyncio.client import connect  # pragma: no cover - сүлжээ
+
+        return connect(url)  # pragma: no cover - сүлжээ

@@ -271,3 +271,43 @@ async def test_drift_above_the_limit_trips_the_breaker(db_session, broker, setti
     assert report.count == 3
     assert report.breaker_tripped is True
     assert (await machine.current()).state is SystemState.HALTED
+
+
+async def test_the_real_adapter_stream_runs_a_clean_cycle_without_a_disconnect(
+    engine, bus, db_session, seeded_orders
+):
+    """UAT 5-р тойргийн блоклогчийн регресс.
+
+    `AlpacaAdapter.stream_trade_updates()` нь `NotImplementedError` гаргадаг
+    байсан тул мөчлөг БҮР `ws_disconnect` бичдэг байв — тоолуур босгыг
+    давж, `POST /system/activate` мөнхөд 409. Бодит WS-ийн нэг цэвэр
+    мөчлөг нь тоолуурыг ХӨДӨЛГӨХГҮЙ, харин fill-ийг шингээнэ.
+    """
+    import json
+
+    from app.broker.alpaca import AlpacaAdapter
+    from app.config.mode import TradingMode
+    from app.db import make_sessionmaker
+    from tests.fakes import fake_ws_connect
+    from tests.unit.test_alpaca_stream import AUTH_OK, FILL, LISTENING
+
+    _, connect = fake_ws_connect(
+        [json.dumps(AUTH_OK), json.dumps(LISTENING), json.dumps(FILL).encode()]
+    )
+    adapter = AlpacaAdapter(
+        mode=TradingMode.PAPER, api_key="k", api_secret="s", ws_connect=connect
+    )
+    monitor = StalenessMonitor(bus, stale_after_seconds=5)
+    ingestor = TradeUpdateIngestor(make_sessionmaker(engine), adapter, bus, monitor)
+
+    await ingestor.run_forever(max_cycles=1)
+
+    disconnects = (
+        await db_session.execute(
+            select(models.BreakerEvent).where(models.BreakerEvent.kind == "ws_disconnect")
+        )
+    ).scalars().all()
+    assert disconnects == [], "цэвэр мөчлөг нь `ws_disconnect` бичих ёсгүй"
+    order = [o for o in seeded_orders if o.client_order_id == "p3-seed-manual"][0]
+    await db_session.refresh(order)
+    assert order.status == "filled"

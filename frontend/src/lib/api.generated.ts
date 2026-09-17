@@ -1296,8 +1296,15 @@ export interface components {
             title: string;
             status: number;
             /** @enum {string} */
-            code: "confirmation_required" | "system_halted" | "winding_down_increase_blocked" | "risk_rejected" | "grounding_failed" | "idempotency_conflict" | "breaker_still_tripped" | "already_active" | "approval_expired" | "version_conflict" | "broker_unavailable" | "provider_unavailable" | "not_found";
+            code: "confirmation_required" | "system_halted" | "winding_down_increase_blocked" | "risk_rejected" | "grounding_failed" | "idempotency_conflict" | "breaker_still_tripped" | "already_active" | "approval_expired" | "version_conflict" | "broker_unavailable" | "broker_rejected" | "provider_unavailable" | "not_found" | "invalid_request";
             detail?: string;
+            /** @description Зөвхөн `broker_rejected` үед. Alpaca-ийн алдааны код (ж: `42210000` — wash trade). Broker ХАРИУЛСАН гэдгийн нотолгоо. */
+            broker_code?: string;
+            /** @description Зөвхөн `invalid_request` үед. Унасан талбар тус бүр. */
+            errors?: {
+                loc: string;
+                msg: string;
+            }[];
             risk?: components["schemas"]["RiskEvaluation"];
             /** @description Зөвхөн `confirmation_required` үед. Хоёр шаттай баталгаажуулалтын сорилт. */
             confirmation?: {

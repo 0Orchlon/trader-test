@@ -8,12 +8,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.envelope import MixedSourceError
 from app.api.problem import ProblemError
 from app.audit import logging as audit_logging
-from app.broker.models import BrokerUnavailable, SystemState
+from app.broker.models import BrokerRejected, BrokerUnavailable, SystemState
 from app.db import make_sessionmaker
 from app.stream.bus import CHANNEL_SYSTEM, EventBus
 from app.system.state import StateMachine
@@ -122,6 +123,30 @@ def create_app(
     @app.exception_handler(BrokerUnavailable)
     async def _broker_handler(_request, exc: BrokerUnavailable):
         return ProblemError("broker_unavailable", 503, str(exc)).response()
+
+    @app.exception_handler(BrokerRejected)
+    async def _broker_rejected_handler(_request, exc: BrokerRejected):
+        # Alpaca ХАРИУЛСАН бөгөөд татгалзсан — 503 «хүрэхгүй» гэж хэлэх нь
+        # худал оношилгоо байв (N-3). Operator-т Alpaca-ийн кодыг ил өгнө.
+        return ProblemError(
+            "broker_rejected", 422, exc.message, broker_code=exc.broker_code
+        ).response()
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_handler(_request, exc: RequestValidationError):
+        """FastAPI-ийн анхдагч `{"detail": [...]}` нь `code`-гүй (N-2).
+
+        Frontend ЗӨВХӨН `code`-оор салаалдаг тул кодгүй хариу нь «үл
+        мэдэгдэх алдаа» болно. Оролтын УТГЫГ буцаахгүй — хүсэлтийн бие
+        нууц агуулж болно (LLD §14 redaction).
+        """
+        errors = [
+            {"loc": ".".join(str(part) for part in error.get("loc", ())), "msg": error.get("msg", "")}
+            for error in exc.errors()
+        ]
+        return ProblemError(
+            "invalid_request", 422, "Хүсэлт гэрээний схемийг хангахгүй байна", errors=errors
+        ).response()
 
     @app.exception_handler(MixedSourceError)
     async def _mixed_source_handler(_request, exc: MixedSourceError):

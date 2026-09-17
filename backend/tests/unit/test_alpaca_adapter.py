@@ -114,3 +114,77 @@ async def test_live_host_is_blocked_inside_tests(_live_egress_guard):
         await adapter.get_account()
     assert _live_egress_guard.blocked  # барьсан
     _live_egress_guard.blocked.clear()  # энэ тест зориудаар оролдсон
+
+
+# --- N-3: broker-ийн ТАТГАЛЗАЛ ≠ broker-ийн УНАЛТ ---
+
+WASH_TRADE = {"code": 42210000, "message": "potential wash trade detected. use complex orders"}
+
+
+def _order() -> "ValidatedOrder":
+    from app.broker.models import OrderSide, OrderType, TimeInForce, ValidatedOrder
+
+    return ValidatedOrder(
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        qty=Decimal("10"),
+        order_type=OrderType.MARKET,
+        time_in_force=TimeInForce.DAY,
+        limit_price=None,
+        stop_price=None,
+        client_order_id="p3-wash-1",
+    )
+
+
+async def test_wash_trade_403_is_a_rejection_not_an_outage():
+    """Alpaca хариулсан = Alpaca АМЬД. 503 гэж хэлэх нь худал оношилгоо."""
+    from app.broker.models import BrokerRejected
+
+    adapter = _adapter(lambda r: httpx.Response(403, json=WASH_TRADE))
+    with pytest.raises(BrokerRejected) as caught:
+        await adapter.submit_order(_order())
+    assert caught.value.broker_code == "42210000"
+    assert "wash trade" in caught.value.message
+    assert not isinstance(caught.value, BrokerUnavailable)
+
+
+async def test_a_rejection_does_not_inflate_the_api_error_rate():
+    """`api_error_rate` нь ХҮРЭХГҮЙ БАЙДЛЫН метрик — татгалзал түүнийг бохирдуулахгүй."""
+    reported: list[bool] = []
+    adapter = _adapter(lambda r: httpx.Response(403, json=WASH_TRADE))
+
+    async def reporter(ok: bool) -> None:
+        reported.append(ok)
+
+    adapter.bind_api_reporter(reporter)
+    from app.broker.models import BrokerRejected
+
+    with pytest.raises(BrokerRejected):
+        await adapter.submit_order(_order())
+    assert reported == [True]
+
+
+async def test_server_error_is_still_an_outage():
+    reported: list[bool] = []
+    adapter = _adapter(lambda r: httpx.Response(500, text="boom"))
+
+    async def reporter(ok: bool) -> None:
+        reported.append(ok)
+
+    adapter.bind_api_reporter(reporter)
+    with pytest.raises(BrokerUnavailable):
+        await adapter.submit_order(_order())
+    assert reported == [False]
+
+
+async def test_unauthorized_401_is_an_outage_not_an_order_rejection():
+    """Түлхүүр буруу бол ямар ч order илгээгдэхгүй — энэ нь татгалзал БИШ."""
+    adapter = _adapter(lambda r: httpx.Response(401, json={"code": 40110000, "message": "auth"}))
+    with pytest.raises(BrokerUnavailable):
+        await adapter.submit_order(_order())
+
+
+async def test_rate_limit_429_is_an_outage_not_an_order_rejection():
+    adapter = _adapter(lambda r: httpx.Response(429, json={"message": "too many requests"}))
+    with pytest.raises(BrokerUnavailable):
+        await adapter.submit_order(_order())

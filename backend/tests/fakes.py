@@ -171,3 +171,44 @@ def broker_order(client_order_id: str, symbol: str = "AAPL") -> BrokerOrder:
         status=OrderStatus.ACCEPTED,
         submitted_at=now_utc(),
     )
+
+
+class FakeWebSocket:
+    """Alpaca-ийн `/stream` сокетын оронд. Явуулсан бүхнийг тэмдэглэнэ."""
+
+    def __init__(self, frames) -> None:
+        self.frames = list(frames)
+        self.sent: list[dict] = []
+        self.closed = False
+
+    async def send(self, payload) -> None:
+        import json
+
+        self.sent.append(json.loads(payload))
+
+    def __aiter__(self):
+        return self._frames()
+
+    async def _frames(self):
+        for frame in self.frames:
+            yield frame
+
+
+def fake_ws_connect(frames):
+    """`(socket, connect)` — `connect(url)` нь async context manager."""
+    socket = FakeWebSocket(frames)
+    urls: list[str] = []
+
+    class _Connect:
+        def __init__(self, url, **kwargs) -> None:
+            urls.append(url)
+
+        async def __aenter__(self):
+            return socket
+
+        async def __aexit__(self, *exc):
+            socket.closed = True
+            return False
+
+    socket.urls = urls
+    return socket, _Connect

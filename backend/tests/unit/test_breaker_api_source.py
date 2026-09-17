@@ -59,9 +59,8 @@ async def test_failed_read_is_counted_bad():
     assert seen == [False]
 
 
-async def test_submit_order_failure_is_counted_bad():
-    adapter, seen = _adapter(lambda r: httpx.Response(422, json={"message": "no"}))
-    order = ValidatedOrder(
+def _order() -> ValidatedOrder:
+    return ValidatedOrder(
         symbol="AAPL",
         side=OrderSide.BUY,
         qty=Decimal("1"),
@@ -71,9 +70,30 @@ async def test_submit_order_failure_is_counted_bad():
         limit_price=None,
         stop_price=None,
     )
+
+
+async def test_submit_order_outage_is_counted_bad():
+    adapter, seen = _adapter(lambda r: httpx.Response(500, json={"message": "no"}))
     with pytest.raises(BrokerUnavailable):
-        await adapter.submit_order(order)
+        await adapter.submit_order(_order())
     assert seen == [False]
+
+
+async def test_submit_order_rejection_is_counted_ok():
+    """N-3 — татгалзал нь broker АМЬД гэдгийн нотолгоо.
+
+    Өмнө нь 4xx бүр `api_error` = `False` болж энэ метрикийг ахиулдаг байв:
+    ганц wash-trade татгалзал «Alpaca унаж байна» гэсэн дүр зурагт нэмэгддэг
+    байсан. Татгалзал нь `order_reject_rate`-ийн хэрэг.
+    """
+    from app.broker.models import BrokerRejected
+
+    adapter, seen = _adapter(
+        lambda r: httpx.Response(403, json={"code": 42210000, "message": "wash trade"})
+    )
+    with pytest.raises(BrokerRejected):
+        await adapter.submit_order(_order())
+    assert seen == [True]
 
 
 async def test_empty_window_is_unmeasured_not_zero(db_session, settings, broker):

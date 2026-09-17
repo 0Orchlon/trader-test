@@ -23,6 +23,8 @@ TITLES = {
     "approval_expired": "Хугацаа дууссан",
     "version_conflict": "Хувилбарын зөрүү",
     "broker_unavailable": "Broker хүрэхгүй байна",
+    "broker_rejected": "Broker order-ыг татгалзав",
+    "invalid_request": "Хүсэлтийн бие эсвэл параметр хүчингүй",
     "provider_unavailable": "Provider хүрэхгүй байна",
     "not_found": "Олдсонгүй",
 }

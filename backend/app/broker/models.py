@@ -200,4 +200,20 @@ class BrokerUnavailable(RuntimeError):
     """Alpaca хүрэхгүй. Кэшээс хуучин утга буцаах зам БАЙХГҮЙ (LLD §7)."""
 
 
+class BrokerRejected(RuntimeError):
+    """Alpaca ХАРИУЛСАН бөгөөд order-ыг татгалзсан (wash trade, buying power).
+
+    `BrokerUnavailable`-ээс ХОЛЬЖ болохгүй: хариулсан broker нь амьд тул
+    «дахин оролдоод үз» гэсэн зөвлөгөө худал, `api_error_rate`-ийн
+    хүрэхгүй байдлын метрик ч бохирдоно. Энэ нь **арилжааны** татгалзал —
+    шалтгаан нь Alpaca-ийн кодоор operator-т ил гарна.
+    """
+
+    def __init__(self, message: str, *, broker_code: str | None = None, status: int = 0) -> None:
+        super().__init__(message)
+        self.message = message
+        self.broker_code = broker_code
+        self.status = status
+
+
 __all__ = [n for n in dir() if not n.startswith("_")]
