@@ -79,6 +79,19 @@ class Settings(BaseSettings):
             return timedelta(seconds=int(v))
         return v
 
+    @field_validator("DAILY_LOSS_LIMIT")
+    @classmethod
+    def _negative_loss_limit(cls, v: Decimal) -> Decimal:
+        """Хязгаар нь СӨРӨГ — энэ нь өдрийн P&L-ийн доод шал (N-3).
+
+        `r8` нь `pnl > limit` бол зөвшөөрнө, breaker нь `pnl <= limit` бол
+        зогсооно. Эерэг утга нь хоёуланг нь шууд идэвхжүүлж, систем
+        чимээгүй бүтэн түгжигдэнэ — тиймээс энэ нь эхлэхээс өмнө УНАНА.
+        """
+        if v >= 0:
+            raise ValueError("DAILY_LOSS_LIMIT нь сөрөг байх ёстой (ж: -2000.00)")
+        return v
+
     @field_validator("RESTRICTED_SYMBOLS")
     @classmethod
     def _upper(cls, v: str) -> str:

@@ -22,7 +22,9 @@ from pathlib import Path
 
 #: (бүлгийн нэр, зам хайх урьдчилгаа, шаардлагатай хувь)
 GATES: tuple[tuple[str, tuple[str, ...], float], ...] = (
-    ("risk", ("app/risk/agent.py", "app/risk/rules.py", "app/risk/limits.py"), 100.0),
+    # Файл НЭРЛЭХГҮЙ, БҮЛЭГ бүхэлдээ: нэрлэсэн жагсаалт нь шинэ файлыг
+    # (жишээ нь `breaker.py`) чимээгүй хаалганаас гадуур үлдээдэг байв (B-3).
+    ("risk", ("app/risk/",), 100.0),
     (
         "order-path",
         ("app/execution/", "app/api/routes_orders.py", "app/approvals/"),

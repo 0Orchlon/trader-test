@@ -30,7 +30,7 @@ def test_published_system_event_reaches_client(app):
         ws.receive_json()  # snapshot
 
         async def publish():
-            await app.state.publish_system({"event": "kill_switch_engaged", "ts": "now"})
+            await app.state.publish_system({"event": "kill_switch_engaged"})
 
         client.portal.call(publish)
         message = ws.receive_json()
@@ -43,7 +43,18 @@ def test_tick_flood_does_not_starve_system_channel(app):
 
         async def flood():
             for i in range(2000):
-                await app.state.bus.publish("ticks:AAPL", {"symbol": "AAPL", "price": str(i)})
+                # Гэрээний дагуу бүтэн tick (asyncapi `Tick`) — bus нь
+                # `ValidatingEventBus` тул дутуу payload энд УНАНА.
+                await app.state.bus.publish(
+                    "ticks:AAPL",
+                    {
+                        "symbol": "AAPL",
+                        "price": f"{i}.00",
+                        "ts": "2026-09-17T00:00:00Z",
+                        "source": "alpaca_paper",
+                        "stale": False,
+                    },
+                )
             await app.state.publish_system({"event": "wind_down_started"})
 
         client.portal.call(flood)

@@ -20,7 +20,7 @@ from app.api.envelope import envelope
 from app.api.problem import problem
 from app.api.risk_context import build as build_risk_context
 from app.api.routes_read import current_source
-from app.api.serializers import approval_json, order_json
+from app.api.serializers import approval_json, order_event, order_json
 from app.approvals.queue import (
     APPROVED,
     EXPIRED,
@@ -164,7 +164,7 @@ async def post_approve(
     )
     await session.commit()
     await request.app.state.bus.publish(
-        CHANNEL_ORDERS, {"event": "approval_approved", "order": order_json(order)}
+        CHANNEL_ORDERS, order_event("approval_approved", order, source=current_source(request))
     )
     return envelope(
         {"order": order_json(order), "risk": evaluation.to_contract()},

@@ -48,3 +48,22 @@ def test_settings_loads_when_all_limits_present(monkeypatch, limit_env):
     s = Settings()
     assert str(s.MAX_ORDER_NOTIONAL) == "5000.00"
     assert s.WIND_DOWN_GRACE.total_seconds() == 900
+
+
+# --- N-3: `DAILY_LOSS_LIMIT` нь далд БИШ, ил гэрээтэй ---
+
+
+def test_a_positive_daily_loss_limit_is_refused(limit_env):
+    """Эерэг утга нь чимээгүй бүтэн түгжээ болно (N-3).
+
+    `r8` нь `pnl > limit`-ээр зөвшөөрдөг, breaker нь `pnl <= limit`-ээр
+    зогсоодог: `+2000` бичвэл order бүр татгалзаж, breaker шууд унана —
+    fail-closed боловч шалтгаан нь хаана ч харагдахгүй.
+    """
+    from pydantic import ValidationError
+
+    from app.config.settings import Settings
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(**{**limit_env, "DAILY_LOSS_LIMIT": "2000.00"})
+    assert "DAILY_LOSS_LIMIT" in str(exc.value)

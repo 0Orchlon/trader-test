@@ -144,3 +144,41 @@ async def test_publish_happens_after_commit(machine, db_session):
     await machine.ensure_initialised()
     await machine.transition(SystemState.ACTIVE, by="operator", reason="эхлүүлэв")
     assert seen[-1] == ("active", 2)
+
+
+# --- B-1: шилжилтийн мөрийн lock (LLD §6.2-ийн 1-р алхам) ---
+
+
+def test_transition_reads_the_row_with_for_update():
+    """Postgres дээр `SELECT ... FOR UPDATE` бодитоор гарна.
+
+    SQLite нь мөрийн lock-ыг дэмждэггүй тул тестийн DB дээр энэ заалт
+    хаягдана — компиляцийн шалгалт нь prod-ийн диалект дээрх ЯГ тэр
+    statement-ыг хардаг цорын ганц зам.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from app.system.state import locked_state_stmt
+
+    sql = str(locked_state_stmt().compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE" in sql.upper()
+
+
+async def test_transition_ignores_the_read_cache(db_session):
+    """Кэшлэгдсэн төлөв дээр шийдвэр гаргах нь уралдааны цонх (B-1).
+
+    `enforce_breaker` (5s) ба API-ийн `activate` нэг event loop дээр
+    ажиллана: хуучин утга дээр шийдвэрлэвэл унасан метриктэй атлаа
+    `active` үлдэх боломж үүснэ.
+    """
+    writer = StateMachine(db_session, wind_down_grace=GRACE)
+    reader = StateMachine(db_session, wind_down_grace=GRACE)
+    await writer.ensure_initialised()
+    await reader.current()  # reader-ийн кэшид `halted` суув
+    await writer.transition(SystemState.ACTIVE, by="operator", reason="эхлүүлэв")
+
+    # Кэш нь `halted` гэж хэлж байгаа ч DB нь `active` — шилжилт нь DB-г
+    # уншина, тиймээс давхар идэвхжүүлэлт 409.
+    with pytest.raises(InvalidTransition) as exc:
+        await reader.transition(SystemState.ACTIVE, by="operator", reason="давхар")
+    assert exc.value.code == "already_active"

@@ -25,7 +25,7 @@ from app.api.envelope import envelope
 from app.api.problem import problem
 from app.api.risk_context import build as build_risk_context
 from app.api.routes_read import current_source
-from app.api.serializers import order_json
+from app.api.serializers import order_event, order_json
 from app.audit.chain import AuditChain
 from app.broker.models import (
     BrokerUnavailable,
@@ -214,7 +214,7 @@ async def post_orders_manual(
         request_hash=request_hash(intent),
     )
     await request.app.state.bus.publish(
-        CHANNEL_ORDERS, {"event": "order_submitted", "order": order_json(row)}
+        CHANNEL_ORDERS, order_event("order_submitted", row, source=source)
     )
     return envelope(
         {"order": order_json(row), "risk": evaluation.to_contract()},

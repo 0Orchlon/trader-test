@@ -18,6 +18,7 @@ from app.api.problem import problem
 from app.api.routes_read import current_source
 from app.broker.models import SystemState
 from app.risk.breaker import CircuitBreaker
+from app.system.scheduler import schedule_wind_down_deadline
 from app.system.state import InvalidTransition
 from app.util.time import to_iso
 
@@ -87,6 +88,8 @@ async def post_wind_down(
     except InvalidTransition as exc:
         raise problem("system_halted", 409, exc.detail) from exc
     request.app.state.current_state = row.state
+    # Grace дуусах агшинд нэг удаагийн job (LLD §6.4) — 10s sweep нь нөөц.
+    schedule_wind_down_deadline(request.app, row.wind_down_deadline)
     return await state_body(request, machine, session)
 
 

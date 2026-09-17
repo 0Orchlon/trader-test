@@ -44,6 +44,24 @@ class StateRow:
         return max(0, int((self.wind_down_deadline - now_utc()).total_seconds()))
 
 
+def locked_state_stmt():
+    """Хамгийн сүүлийн төлөвийн мөр — МӨРИЙН LOCK-той (LLD §6.2-ийн 1-р алхам).
+
+    Зэрэгцээ шилжилтүүдийг цувуулна: `enforce_breaker` (5s) ба operator-ийн
+    `activate` нь нэг event loop дээр await цэгүүдээр солбидог тул түгжээгүй
+    бол «унасан метриктэй атлаа `active`» цонх үүснэ.
+
+    SQLite нь мөрийн lock дэмждэггүй тул тестийн DB дээр заалт хаягдана —
+    тэнд транзакц өөрөө цуваа (бичих түгжээ бүхэл файл дээр).
+    """
+    return (
+        select(models.SystemStateRow)
+        .order_by(models.SystemStateRow.seq.desc())
+        .limit(1)
+        .with_for_update()
+    )
+
+
 def _row(model: models.SystemStateRow) -> StateRow:
     return StateRow(
         seq=int(model.seq),
@@ -123,7 +141,13 @@ class StateMachine:
         reason: str | None,
         grace: timedelta | None = None,
     ) -> StateRow:
-        current = await self.current()
+        # Кэш ТОЙРОГДОНО: шийдвэр нь түгжигдсэн мөрийн ОДООГИЙН утга дээр
+        # гарна, 200ms хуучирсан хуулбар дээр биш (B-1).
+        locked = (await self.session.execute(locked_state_stmt())).scalar_one_or_none()
+        if locked is None:
+            raise InvalidTransition("not_initialised", "system_state хоосон — ensure_initialised()")
+        current = _row(locked)
+        self._cache = None
         deadline = self._validate(current, to, grace)
         if deadline is _NO_OP:
             return current
@@ -133,7 +157,9 @@ class StateMachine:
         if self.publisher is not None:
             await self.publisher(
                 {
-                    "type": "state_changed",
+                    # asyncapi `SystemEvent`: талбар нь `event`, `type` БИШ.
+                    "event": "state_changed",
+                    "state": row.state.value,
                     "from": current.state.value,
                     "to": row.state.value,
                     "reason": row.reason,

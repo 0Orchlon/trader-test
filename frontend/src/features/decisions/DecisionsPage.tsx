@@ -27,6 +27,7 @@ import { useSearchParams } from 'react-router-dom';
 
 import { api, type AgentDecision } from '@/lib/api';
 import { formatMoney, formatQuantity, formatUtc } from '@/lib/money';
+import { distinctSources } from '@/lib/source';
 
 const OUTCOME_COLOR: Record<string, string> = {
   executed: 'green',
@@ -136,6 +137,9 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
     queryKey: ['decision', decision.id],
     queryFn: () => api.decision(decision.id),
   });
+  // Нэг хүснэгт = нэг source (N-5). Шошгыг мөр бүрд давтахгүй: давталт нь
+  // холимгийг далдалдаг — нүд нь ялгааг олохгүй.
+  const sources = distinctSources((data?.tool_calls ?? []).map((call) => call.source));
 
   return (
     <Stack gap="sm">
@@ -171,10 +175,23 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
       ) : null}
 
       <Card withBorder padding="sm">
-        <Text size="sm" fw={600} mb="xs">
-          Иш татсан tool call — ТҮҮХИЙ payload
-        </Text>
+        <Group justify="space-between" mb="xs">
+          <Text size="sm" fw={600}>
+            Иш татсан tool call — ТҮҮХИЙ payload
+          </Text>
+          {sources.length === 1 ? (
+            <Badge variant="light" color="gray" data-testid="tool-calls-source">
+              {sources[0]}
+            </Badge>
+          ) : null}
+        </Group>
         {isLoading ? <Loader size="sm" /> : null}
+        {sources.length > 1 ? (
+          <Alert color="red" data-testid="mixed-source">
+            Энэ хүснэгтэд ХОЛИМОГ source байна ({sources.join(', ')}) — аль нь бодит
+            өгөгдөл болох нь ойлгомжгүй тул харуулахгүй (LLD §16.2).
+          </Alert>
+        ) : (
         <Table data-testid="tool-calls-table">
           <Table.Thead>
             <Table.Tr>
@@ -189,9 +206,6 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
                 <Table.Td>
                   <Text size="sm" fw={600}>
                     {call.tool_name}
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    {call.source}
                   </Text>
                 </Table.Td>
                 <Table.Td>
@@ -211,6 +225,7 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
             ))}
           </Table.Tbody>
         </Table>
+        )}
       </Card>
     </Stack>
   );

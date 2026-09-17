@@ -26,14 +26,14 @@ async def _snapshot(app) -> dict:
     async with app.state.sessionmaker() as session:
         machine = StateMachine(session, wind_down_grace=app.state.settings.WIND_DOWN_GRACE)
         row = await machine.current()
-    return {
+    return app.state.bus.stamp({
         "event": "state_changed",
         "state": row.state.value,
         "reason": row.reason,
         "wind_down_deadline": to_iso(row.wind_down_deadline),
         "seconds_remaining": row.seconds_remaining,
         "ts": to_iso(row.changed_at),
-    }
+    })
 
 
 @router.websocket("/ws")
@@ -57,7 +57,7 @@ async def websocket_endpoint(websocket: WebSocket, channels: str | None = None) 
         while True:
             await asyncio.sleep(heartbeat_seconds)
             await websocket.send_json(
-                {"channel": CHANNEL_SYSTEM, "payload": {"event": "heartbeat"}}
+                {"channel": CHANNEL_SYSTEM, "payload": bus.stamp({"event": "heartbeat"})}
             )
 
     tasks = [asyncio.create_task(pump()), asyncio.create_task(heartbeat())]

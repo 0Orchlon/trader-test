@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
-from app.broker.models import OrderStatus, TradeUpdate
+from app.broker.models import Origin, OrderStatus, TradeUpdate
 from app.risk import breaker
 from app.stream.bus import CHANNEL_ORDERS, CHANNEL_SYSTEM, EventBus
 from app.util.time import now_utc, to_iso
@@ -173,16 +173,26 @@ class TradeUpdateIngestor:
             self.monitor.touch(CHANNEL_ORDERS, at=update.ts)
             async with self.sessionmaker() as session:
                 row = await self.apply(session, update)
+                # asyncapi `OrderUpdate`: шаардлагатай талбарууд ДЭЭД ТҮВШИНД.
+                # Локал мөргүй бол `order_id` нь null, `origin` нь `external`
+                # — гарал үүслийг ТААМАГЛАХГҮЙ (LLD §11.1).
                 payload = {
                     "event": "trade_update",
+                    "order_id": str(row.id) if row is not None else None,
                     "client_order_id": update.client_order_id,
                     "broker_order_id": update.broker_order_id,
                     "status": update.status.value,
                     "filled_qty": str(update.filled_qty),
+                    "origin": row.origin if row is not None else Origin.EXTERNAL.value,
+                    "origin_detail": row.origin_detail if row is not None else None,
                     "ts": to_iso(update.ts),
+                    "source": self.broker.source.value,
                     # Локал мөргүй бол ил хэлнэ — UI үүнийг `external` гэж үзнэ.
                     "known_locally": row is not None,
                 }
+                symbol = row.symbol if row is not None else update.raw.get("symbol")
+                if symbol:  # локал мөргүй, raw-д ч байхгүй бол ТААМАГЛАХГҮЙ
+                    payload["symbol"] = str(symbol)
             await self.bus.publish(CHANNEL_ORDERS, payload)
             count += 1
         return count

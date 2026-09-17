@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 GRACE_SWEEP_SECONDS = 10
 APPROVAL_REAP_SECONDS = 30
@@ -57,6 +58,25 @@ async def reconcile_eod(sessionmaker, settings, broker, publisher):
 
     async with sessionmaker() as session:
         return await reconcile(session, broker, settings=settings, publisher=publisher)
+
+
+def schedule_wind_down_deadline(app, deadline) -> None:
+    """Grace дуусах ЯГ агшинд ажиллах нэг удаагийн job (LLD §6.4, D-8).
+
+    10 секундын `interval` sweep дангаараа ±10s нарийвчлалтай — kill
+    switch-ийн амлалт нь «цонх» биш, «агшин». `date` job нь тэр агшныг
+    барина; `interval` нь job алдагдсан (restart) үеийн нөөц хэвээр.
+    """
+    scheduler = getattr(app.state, "scheduler", None)
+    if scheduler is None or deadline is None:
+        return
+    scheduler.add_job(
+        sweep_grace,
+        DateTrigger(run_date=deadline),
+        args=[app.state.sessionmaker, app.state.settings, app.state.publish_system],
+        id="wind_down_deadline",
+        replace_existing=True,
+    )
 
 
 def build_scheduler(app) -> AsyncIOScheduler:

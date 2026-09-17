@@ -43,7 +43,7 @@ from app.broker.models import (
 from app.execution.agent import ExecutionAgent
 from app.risk.agent import evaluate
 from app.risk.rules import increases_exposure, position_for
-from app.stream.bus import CHANNEL_DECISIONS
+from app.stream.bus import CHANNEL_DECISIONS, CHANNEL_SYSTEM
 from app.tuning.whitelist import bounds_json, lookup
 from app.util.time import now_utc, to_iso
 
@@ -245,12 +245,17 @@ async def _record_decision(
     if ctx.bus is not None:
         await ctx.bus.publish(
             CHANNEL_DECISIONS,
+            # asyncapi `DecisionEvent` — аль agent, ямар model, ЯМАР өгөгдөл
+            # дээр тулгуурласан нь ил (FR-10). `seq`/`ts`-ийг bus тамгална.
             {
                 "event": "decision_recorded",
                 "decision_id": str(row.id),
+                "agent": ctx.agent,
+                "provider": ctx.provider_id,
+                "model": ctx.model,
                 "symbol": proposal.get("symbol"),
                 "outcome": outcome,
-                "provider": ctx.provider_id,
+                "grounded_in": [str(x) for x in (proposal.get("grounded_in") or [])],
             },
         )
     return row
@@ -379,6 +384,20 @@ async def propose_order(ctx: ToolContext, args: dict) -> dict:
             ttl=ctx.settings.APPROVAL_TTL,
         )
         await ctx.session.commit()
+        if ctx.bus is not None:
+            # LLD §9.4 — operator-т мэдэгдэх ЦОРЫН ГАНЦ шуурхай зам.
+            await ctx.bus.publish(
+                CHANNEL_SYSTEM,
+                {
+                    "event": "approval_created",
+                    "detail": {
+                        "approval_id": str(approval.id),
+                        "decision_id": str(decision.id),
+                        "symbol": proposal.get("symbol"),
+                        "expires_at": to_iso(approval.expires_at),
+                    },
+                },
+            )
         return {
             "decision_id": str(decision.id),
             "accepted": False,

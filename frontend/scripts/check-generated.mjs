@@ -12,14 +12,21 @@ const target = 'src/lib/api.generated.ts';
 const dir = mkdtempSync(join(tmpdir(), 'p3-api-'));
 const fresh = join(dir, 'api.ts');
 
+/**
+ * Мөрийн төгсгөлийг нормчилно: Windows checkout (`core.autocrlf=true`) дээр
+ * commit хийгдсэн файл CRLF-ээр задардаг, codegen нь LF бичдэг. Агуулга
+ * тэнцүү атлаа хаалга унах нь худал улаан (N-7).
+ */
+const lf = (text) => text.replace(/\r\n/g, '\n');
+
 try {
   execFileSync(
     process.execPath,
     ['node_modules/openapi-typescript/bin/cli.js', '../contracts/openapi.yaml', '-o', fresh],
     { stdio: 'inherit' },
   );
-  const generated = readFileSync(fresh, 'utf8');
-  const committed = readFileSync(target, 'utf8');
+  const generated = lf(readFileSync(fresh, 'utf8'));
+  const committed = lf(readFileSync(target, 'utf8'));
   if (generated !== committed) {
     console.error(
       `${target} нь гэрээтэй зөрүүтэй. \`npm run generate:api\` ажиллуулна уу.`,

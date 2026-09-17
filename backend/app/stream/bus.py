@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from itertools import count
 from typing import Any
 
+from app.util.time import now_utc, to_iso
+
 CHANNEL_SYSTEM = "system"
 CHANNEL_ORDERS = "orders"
 CHANNEL_DECISIONS = "agent-decisions"
@@ -127,8 +129,17 @@ class EventBus:
         if sub in self._subscribers:
             self._subscribers.remove(sub)
 
+    def stamp(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """`seq` + `ts` — asyncapi нь хоёуланг ЗААВАЛ шаардана.
+
+        WS-ээр bus-гүйгээр шууд илгээгддэг frame-ууд (snapshot, heartbeat)
+        БАС энэ функцээр дамжина: тамга нэг газраас тавигдахгүй бол нэг
+        гадаргуу дээр хоёр өөр хэлбэр үүснэ.
+        """
+        return {"seq": next(self._seq), "ts": to_iso(now_utc()), **payload}
+
     async def publish(self, channel: str, payload: dict[str, Any]) -> Message:
-        enriched = {"seq": next(self._seq), **payload}
+        enriched = self.stamp(payload)
         message = Message(channel=channel, payload=enriched)
         if channel == CHANNEL_SYSTEM:
             self._system_history.append(message)

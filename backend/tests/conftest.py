@@ -83,9 +83,14 @@ def settings(limit_env):
 
 @pytest.fixture
 def bus():
-    from app.stream.bus import EventBus
+    """Гэрээгээр шалгадаг bus (B-2).
 
-    return EventBus()
+    API замуудын нийтлэл бүр `contracts/asyncapi.yaml`-ийн schema-г хангах
+    ёстой; зөрчил нь тухайн замын тестийг УНАГАана.
+    """
+    from tests.asyncapi_schema import ValidatingEventBus
+
+    return ValidatingEventBus()
 
 
 @pytest.fixture

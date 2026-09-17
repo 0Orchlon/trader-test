@@ -64,6 +64,28 @@ def order_json(order: models.Order) -> dict[str, Any]:
     }
 
 
+def order_event(event: str, order: models.Order, *, source) -> dict[str, Any]:
+    """asyncapi `OrderUpdate` — шаардлагатай талбарууд ДЭЭД ТҮВШИНД (B-2).
+
+    Order-ийн нийтлэл гурван замаас гардаг (гарын order, approval, trade
+    update). Хэлбэрийг зам тус бүрд бичих нь нэг сувагт гурван өөр гэрээ
+    болно — тиймээс НЭГ угсрагч. `seq`/`ts`-ийг bus тамгална.
+    """
+    return {
+        "event": event,
+        "order_id": str(order.id),
+        "broker_order_id": order.broker_order_id,
+        "symbol": order.symbol,
+        "status": order.status,
+        "filled_qty": qty_field(order.filled_qty),
+        "origin": order.origin,
+        "origin_detail": order.origin_detail,
+        "source": getattr(source, "value", source),
+        # Бүтэн мөр нь UI-д хэрэгтэй; гэрээ нэмэлт талбарыг хориглоогүй.
+        "order": order_json(order),
+    }
+
+
 def broker_order_json(order: BrokerOrder) -> dict[str, Any]:
     """Alpaca-аас ирсэн, локал мөргүй order (reconciliation-д)."""
     return {

@@ -217,3 +217,33 @@ async def test_grace_expiry_moves_to_halted(client, app):
             session, wind_down_grace=timedelta(seconds=1)
         ).sweep_expired_grace()
     assert swept.state is SystemState.HALTED
+
+
+# --- N-2: grace дуусах ЯГ агшинд ажиллах `date` job (LLD §6.4, D-8) ---
+
+
+class _RecordingScheduler:
+    def __init__(self) -> None:
+        self.jobs: list[dict] = []
+
+    def add_job(self, func, trigger, **kwargs):
+        self.jobs.append({"func": func, "trigger": trigger, **kwargs})
+        return kwargs.get("id")
+
+
+async def test_wind_down_schedules_a_job_at_the_deadline(client, app):
+    """10 секундын sweep дангаараа ±10s нарийвчлал өгнө — LLD нь ХОЁУЛАНГ
+    шаардсан: `date` job нь яг агшинд, `interval` нь алдагдсан үеийн нөөц."""
+    from apscheduler.triggers.date import DateTrigger
+
+    from app.util.time import to_iso
+
+    scheduler = _RecordingScheduler()
+    app.state.scheduler = scheduler
+    await activate(client)
+
+    body = (await client.post("/api/v1/system/wind-down", json={})).json()
+    (job,) = [j for j in scheduler.jobs if j["id"] == "wind_down_deadline"]
+    assert isinstance(job["trigger"], DateTrigger)
+    assert to_iso(job["trigger"].run_date) == body["wind_down_deadline"]
+    assert job["replace_existing"] is True

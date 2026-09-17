@@ -26,6 +26,7 @@ from app.agents.gateway import Gateway, StateView, ToolError, state_view
 from app.agents.router import ProviderRouter, ProviderUnhealthy, UnknownProvider, default_router
 from app.agents.tools import HANDLERS, ToolContext
 from app.broker.models import Source, SystemState
+from app.stream.bus import CHANNEL_SYSTEM
 from app.system.state import StateMachine
 from tests.fakes import position, quote
 from tests.helpers import activate, wind_down
@@ -223,10 +224,11 @@ async def test_a_grounded_approved_proposal_is_executed(gateway, tool_ctx, state
 
 
 async def test_an_escalating_proposal_creates_an_approval_and_submits_nothing(
-    gateway, tool_ctx, state, broker, db_session
+    gateway, tool_ctx, state, broker, db_session, bus
 ):
-    """AC-5 — approve хүртэл Alpaca руу 0 дуудалт."""
+    """AC-5 — approve хүртэл Alpaca руу 0 дуудалт. LLD §9.4 — `approval_created`."""
     broker.quotes["AAPL"] = quote("AAPL", "221.50")
+    subscriber = bus.subscribe([CHANNEL_SYSTEM])
     citation = await cite_a_quote(gateway, tool_ctx, state)
     args = rationale_args(qty="30", grounded_in=[citation])
     result = await gateway.dispatch("propose_order", args, state, tool_ctx)
@@ -235,6 +237,9 @@ async def test_an_escalating_proposal_creates_an_approval_and_submits_nothing(
     approval = (await db_session.execute(select(models.Approval))).scalars().one()
     assert approval.state == "pending"
     assert str(approval.id) == result["data"]["approval_id"]
+    # Operator-т мэдэгдэх ЦОРЫН ГАНЦ зам: `system` суваг (LLD §9.4).
+    created = [m.payload for m in subscriber.drain() if m.payload["event"] == "approval_created"]
+    assert created and created[0]["detail"]["approval_id"] == result["data"]["approval_id"]
 
 
 async def test_a_risk_rejected_proposal_never_reaches_alpaca(

@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: PERSONAL-3 — Frontend WebSocket
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Нэг WebSocket холболт (`/ws`), олон logical суваг. Backend нь Redis
     pub/sub-аас уншаад холбогдсон клиентүүдэд fan-out хийнэ.
@@ -98,8 +98,12 @@ components:
           seq:
             type: integer
           order_id:
-            type: string
+            type: [string, "null"]
             format: uuid
+            description: |
+              Alpaca UI-аас гараар нээсэн order-ийн шинэчлэлт локал мөргүй
+              ирнэ — тэр үед `null`, `origin` нь `external`. Локал id
+              ЗОХИОХГҮЙ (худал гарал үүсэл үүсгэхгүй).
           broker_order_id:
             type: [string, "null"]
           symbol:
@@ -169,6 +173,8 @@ components:
               - approval_created
               - approval_resolved
               - broker_unreachable
+              - stream_stale
+              - stream_live
               - heartbeat
           state:
             type: string
