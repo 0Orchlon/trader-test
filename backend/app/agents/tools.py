@@ -439,7 +439,15 @@ async def _rejected(ctx: ToolContext, proposal: dict, *, reason: str) -> dict:
     decision = await _record_decision(
         ctx,
         proposal=proposal,
-        grounding={"passed": True, "unverified_claims": [], "checked_claims": 0},
+        # Grounding checker ОГТ ажиллаагүй (төлөвийн давхарга эрт татгалзав).
+        # «passed: true» гэж бичвэл Decision Log нь шалгагдаагүйг шалгагдсан
+        # мэт харуулна — хавсралт 10-ийн «мэдэхгүйг мэднэ болгохгүй» (N-3).
+        grounding={
+            "passed": False,
+            "not_run": True,
+            "unverified_claims": [],
+            "checked_claims": 0,
+        },
         risk=None,
         outcome=OUTCOME_FOR_STAGE[STAGE_RISK_REJECTED],
     )

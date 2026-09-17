@@ -274,6 +274,14 @@ async def test_halted_refuses_the_proposal_before_risk(
     assert "halted" in result["data"]["reason"]
     assert broker.submitted == []
 
+    # N-3: grounding ОГТ ажиллаагүй — «дамжсан» гэж бүртгэвэл Decision Log
+    # шалгагдаагүйг шалгагдсан мэт харуулна (хавсралт 10).
+    decision = (
+        await db_session.execute(select(models.AgentDecision))
+    ).scalars().all()[-1]
+    assert decision.grounding["not_run"] is True
+    assert decision.grounding["passed"] is False
+
 
 async def test_winding_down_refuses_an_exposure_increase_with_a_usable_reason(
     gateway, tool_ctx, machine, broker

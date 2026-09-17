@@ -997,6 +997,10 @@ export interface components {
             risk: components["schemas"]["RiskEvaluation"];
             grounding?: {
                 passed: boolean;
+                /** @description Шалгагч ОГТ ажиллаагүй (жишээ нь `halted` үед санал эрт татгалзсан). Ийм үед `passed: false` нь «унасан» биш «шалгагдаагүй» гэсэн утгатай — UI хоёрыг ялгаж харуулна. */
+                not_run?: boolean;
+                /** @description Шалгагдсан тоон мэдэгдлийн тоо. */
+                checked_claims?: number;
                 /** @description Цитат tool call-ийн payload-д ОЛДООГҮЙ тоон мэдэгдлүүд. */
                 unverified_claims?: string[];
             };

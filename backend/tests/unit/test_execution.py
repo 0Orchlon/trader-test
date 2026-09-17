@@ -175,3 +175,24 @@ async def test_winding_down_does_not_block_execution_layer(db_session, active_ma
     )
     assert order.status == OrderStatus.ACCEPTED.value
     assert len(broker.submitted) == 1
+
+
+async def test_toctou_recheck_does_not_trust_the_state_cache(db_session, active_machine):
+    """N-2 — 200ms кэш нь TOCTOU шалгалтыг утгагүй болгож болохгүй (LLD §10).
+
+    Route нь ижил `StateMachine` объект дээр төлвийг АЛЬ ХЭДИЙН уншсан байдаг.
+    Хэрэв кэш хүчинтэй хэвээр бол өөр process-ийн kill switch энэ цонхонд
+    харагдахгүй — Alpaca руу order явна.
+    """
+    await active_machine.current()  # кэш дүүргэв (route-ийн уншилтыг дуурайв)
+
+    # Өөр process-оос дарагдсан kill switch: мөрийг ШУУД DB-д бичив,
+    # энэ объектын кэш хөндөгдөөгүй.
+    other = StateMachine(db_session, wind_down_grace=active_machine.wind_down_grace)
+    await other.transition(SystemState.HALTED, by="operator", reason="ЗОГСОО")
+
+    broker = FakeBroker()
+    agent = ExecutionAgent(db_session, broker, active_machine, mode="paper")
+    with pytest.raises(BrokerUnavailable):
+        await agent.submit(VALIDATED, origin=Origin.MANUAL_OPERATOR, origin_detail="operator")
+    assert broker.submitted == []

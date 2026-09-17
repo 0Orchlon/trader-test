@@ -76,7 +76,9 @@ class ExecutionAgent:
         await self.session.commit()
 
         # 2) TOCTOU: Risk-ийн шалгалтаас хойш kill switch дарагдсан байж болно.
-        state = await self.state_machine.current()
+        #    Кэшийг ТОЙРЧ уншина — эс бөгөөс энэ шалгалт нь route-ийн уншилтыг
+        #    давтаад зогсоно (N-2).
+        state = await self.state_machine.current(fresh=True)
         if state.state is SystemState.HALTED:
             await self._fail(row, "halted_before_submit")
             raise BrokerUnavailable("систем halted — илгээгдсэнгүй")

@@ -53,10 +53,10 @@ function toolCall(id: string, source: string) {
   };
 }
 
-function renderWith(sources: string[]) {
+function renderWith(sources: string[], grounding: Record<string, unknown> = { passed: true, unverified_claims: [] }) {
   const detail = {
     ...feed.decisions[0],
-    grounding: { passed: true, unverified_claims: [] },
+    grounding,
     tool_calls: sources.map((source, index) => toolCall(`c${index}`, source)),
   };
   vi.stubGlobal(
@@ -64,7 +64,10 @@ function renderWith(sources: string[]) {
     vi.fn(
       mockFetch({
         [`/api/v1/agent-decisions/${DECISION_ID}`]: { body: detail },
-        '/api/v1/agent-decisions': { body: feed },
+        // Жагсаалтын мөр нь дэлгэрэнгүйн эх сурвалж (grounding нь мөрөөс).
+        '/api/v1/agent-decisions': {
+          body: { ...feed, decisions: [{ ...feed.decisions[0], grounding }] },
+        },
       }),
     ),
   );
@@ -86,6 +89,19 @@ describe('DecisionsPage — tool call хүснэгтийн source', () => {
     const labels = screen.getAllByTestId('tool-calls-source');
     expect(labels).toHaveLength(1);
     expect(labels[0]).toHaveTextContent('alpaca_paper');
+  });
+
+  it('шалгагч ажиллаагүй бол «унасан» ГЭЖ БИЧИХГҮЙ (N-3)', async () => {
+    renderWith(['alpaca_paper'], {
+      passed: false,
+      not_run: true,
+      unverified_claims: [],
+      checked_claims: 0,
+    });
+    await openDetail();
+    await waitFor(() => expect(screen.getByTestId('decision-grounding')).toBeInTheDocument());
+    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('ажиллаагүй');
+    expect(screen.getByTestId('decision-grounding')).not.toHaveTextContent('УНАСАН');
   });
 
   it('холимог source бол хүснэгт ХАРАГДАХГҮЙ, ил анхааруулга гарна', async () => {

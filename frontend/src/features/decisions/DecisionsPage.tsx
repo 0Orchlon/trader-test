@@ -159,11 +159,18 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
 
       {decision.grounding ? (
         <Alert
-          color={decision.grounding.passed ? 'green' : 'orange'}
+          color={decision.grounding.not_run ? 'gray' : decision.grounding.passed ? 'green' : 'orange'}
           data-testid="decision-grounding"
         >
           <Text size="sm" fw={600}>
-            Үндэслэлийн шалгалт: {decision.grounding.passed ? 'дамжсан' : 'УНАСАН'}
+            Үндэслэлийн шалгалт:{' '}
+            {/* «Ажиллаагүй» нь «унасан» БИШ — хоёрыг нэг үгээр нэрлэвэл
+                шалгагдаагүйг шалгагдсан мэт харуулна (хавсралт 10). */}
+            {decision.grounding.not_run
+              ? 'ажиллаагүй (санал эрт татгалзсан)'
+              : decision.grounding.passed
+                ? 'дамжсан'
+                : 'УНАСАН'}
           </Text>
           {(decision.grounding.unverified_claims ?? []).length > 0 ? (
             <Text size="sm">

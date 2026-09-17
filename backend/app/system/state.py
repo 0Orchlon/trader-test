@@ -88,11 +88,20 @@ class StateMachine:
 
     # --- унших ---
 
-    async def current(self) -> StateRow:
-        """Хамгийн их `seq`-тэй мөр. Богино TTL-тэй process-дотоод кэш."""
+    async def current(self, *, fresh: bool = False) -> StateRow:
+        """Хамгийн их `seq`-тэй мөр. Богино TTL-тэй process-дотоод кэш.
+
+        `fresh=True` нь кэшийг ТОЙРНО: Alpaca руу илгээхийн өмнөх TOCTOU
+        шалгалт (LLD §10) нь route-ийн уншилттай ижил объект дээр явдаг тул
+        кэштэй бол өөр process-ийн kill switch тэр цонхонд харагдахгүй.
+        """
         import time
 
-        if self._cache is not None and time.monotonic() - self._cache[0] < CACHE_TTL_SECONDS:
+        if (
+            not fresh
+            and self._cache is not None
+            and time.monotonic() - self._cache[0] < CACHE_TTL_SECONDS
+        ):
             return self._cache[1]
         model = (
             await self.session.execute(

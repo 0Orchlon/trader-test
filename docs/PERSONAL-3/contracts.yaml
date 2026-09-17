@@ -1439,6 +1439,15 @@ components:
           properties:
             passed:
               type: boolean
+            not_run:
+              type: boolean
+              description: >-
+                Шалгагч ОГТ ажиллаагүй (жишээ нь `halted` үед санал эрт
+                татгалзсан). Ийм үед `passed: false` нь «унасан» биш
+                «шалгагдаагүй» гэсэн утгатай — UI хоёрыг ялгаж харуулна.
+            checked_claims:
+              type: integer
+              description: Шалгагдсан тоон мэдэгдлийн тоо.
             unverified_claims:
               type: array
               items:
