@@ -66,8 +66,13 @@ class Order(Base):
     #: AC-29 — анхдагч утга БАЙХГҮЙ. Дуудагч бүр ил заана.
     origin: Mapped[str] = mapped_column(Text, nullable=False)
     origin_detail: Mapped[str | None] = mapped_column(Text)
-    decision_id: Mapped[uuid.UUID | None] = mapped_column(SAUuid)
-    approval_id: Mapped[uuid.UUID | None] = mapped_column(SAUuid)
+    # FK-тэй (N-4): байхгүй шийдвэр/зөвшөөрөл рүү заасан order нь replay ба
+    # attribution-ийг чимээгүй хоосон болгоно. `null` нь хэвээр — гарын
+    # order-т шийдвэр байхгүй нь ХЭВИЙН.
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        SAUuid, ForeignKey("agent_decisions.id")
+    )
+    approval_id: Mapped[uuid.UUID | None] = mapped_column(SAUuid, ForeignKey("approvals.id"))
     risk_evaluation: Mapped[dict] = mapped_column(JSON, nullable=False)
     #: Мөр бүр өөрийн горимыг МЭДНЭ (AC-21).
     mode: Mapped[str] = mapped_column(Text, nullable=False)

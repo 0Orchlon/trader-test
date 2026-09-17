@@ -6,11 +6,14 @@
  * | Товч             | Өнгө / байрлал | Асуулт |
  * |------------------|----------------|--------|
  * | Зогсоо           | улаан, зүүн    | БАЙХГҮЙ — тэр дор нь ажиллана |
- * | Унтраах бэлтгэл  | шар, төв       | «Компьютераа удахгүй унтраах гэж…» |
+ * | Унтраах бэлтгэл  | шар, төв       | БАЙХГҮЙ — эрсдэл БУУРУУЛАХ үйлдэл |
  * | Идэвхжүүл        | ногоон, баруун | Backend-ийн `confirmation.prompt` |
  *
- * `Идэвхжүүл`-ийн асуулт нь backend-ийн 409 хариунаас ирнэ — UI-д хатуу
- * кодлохгүй. Ингэснээр текстийн ХОЁР эх үүсэхгүй (LLD §16.3).
+ * Баталгаажуулалт нь ЗӨВХӨН эрсдэл НЭМЭГДҮҮЛЭХ замд (§8.4-ийн гурван
+ * үйлдэл). Wind-down нь kill switch-тэй нэг тал дээр: шинэ эрсдэл
+ * нэмэхгүй, буруу дарвал `Идэвхжүүл`-ээр (баталгаажуулалттай) буцна.
+ * Ингэснээр UI-д бодлогын текст хатуу кодлогдохгүй (§16.3) — үлдсэн
+ * ганц асуулт нь backend-ийн 409 хариунаас ирнэ (N-6-ийн шийдэл).
  */
 import { useState } from 'react';
 import { Badge, Button, Group, Modal, Stack, Text, Tooltip } from '@mantine/core';
@@ -21,17 +24,13 @@ import { ApiError, api, type SystemStateEnvelope } from '@/lib/api';
 import { formatCountdown } from '@/lib/money';
 import { systemStateKey } from '@/hooks/useSystemState';
 
-const WIND_DOWN_PROMPT =
-  'Компьютераа удахгүй унтраах гэж байна уу? Агентууд позиц хаах боломжтой, ' +
-  'шинэ эрсдэл нэмэхгүй. Grace дуусахад систем бүрэн зогсоно.';
-
 const STATE_BADGE = {
   active: { color: 'green', label: 'ИДЭВХТЭЙ' },
   winding_down: { color: 'yellow', label: 'ХААХ ЦОНХ' },
   halted: { color: 'red', label: 'ЗОГССОН' },
 } as const;
 
-type Pending = { action: 'wind_down' | 'activate'; prompt: string; token?: string } | null;
+type Pending = { action: 'activate'; prompt: string; token?: string } | null;
 
 export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) {
   const queryClient = useQueryClient();
@@ -50,10 +49,7 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
 
   const windDown = useMutation({
     mutationFn: () => api.windDown('Operator: удахгүй унтраана'),
-    onSuccess: () => {
-      setPending(null);
-      refresh();
-    },
+    onSuccess: refresh,
     onError: (err: Error) => setError(err.message),
   });
 
@@ -135,7 +131,8 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
               variant="filled"
               leftSection={<IconMoon size={16} />}
               disabled={busy || current !== 'active'}
-              onClick={() => setPending({ action: 'wind_down', prompt: WIND_DOWN_PROMPT })}
+              loading={windDown.isPending}
+              onClick={() => windDown.mutate()}
             >
               Унтраах бэлтгэл
             </Button>
@@ -159,25 +156,20 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
       <Modal
         opened={pending !== null}
         onClose={() => setPending(null)}
-        title={pending?.action === 'activate' ? 'Идэвхжүүлэх' : 'Унтраах бэлтгэл'}
+        title="Идэвхжүүлэх"
         data-testid="confirm-modal"
       >
         <Stack gap="md">
           <Text data-testid="confirm-prompt">{pending?.prompt}</Text>
-          {pending?.action === 'activate' ? (
-            <BreakerMetrics state={state} />
-          ) : null}
+          <BreakerMetrics state={state} />
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setPending(null)}>
               Болих
             </Button>
             <Button
               data-testid="confirm-accept"
-              color={pending?.action === 'activate' ? 'green' : 'yellow'}
-              onClick={() => {
-                if (pending?.action === 'activate') activate.mutate(pending.token);
-                else windDown.mutate();
-              }}
+              color="green"
+              onClick={() => activate.mutate(pending?.token)}
             >
               Тийм
             </Button>

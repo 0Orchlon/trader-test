@@ -83,20 +83,21 @@ describe('StateBar (AC-38)', () => {
     vi.unstubAllGlobals();
   });
 
-  it('Унтраах бэлтгэл нь өөрийн асуулттай, backend руу шууд явахгүй', async () => {
-    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+  it('Унтраах бэлтгэл нь асуулт БАЙХГҮЙГЭЭР шууд ажиллана (N-6)', async () => {
+    // Эрсдэл БУУРУУЛАХ үйлдэлд баталгаажуулалт БАЙХГҮЙ — §8.4-ийн гурван
+    // үйлдэлд wind-down ороогүй. Ингэснээр UI-д бодлогын текст үлдэхгүй.
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify(systemState), { status: 200 }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     renderWithProviders(<StateBar state={systemState} />);
     await userEvent.click(screen.getByTestId('wind-down'));
 
-    await waitFor(() =>
-      expect(screen.getByTestId('confirm-prompt')).toHaveTextContent(
-        /Компьютераа удахгүй унтраах/,
-      ),
-    );
-    // Асуултын алхамд backend руу дуудалт БАЙХГҮЙ — товч өөрөө үйлдэл биш.
-    expect(fetchMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(String(fetchMock.mock.calls.at(0)?.[0] ?? '')).toContain('/system/wind-down');
+    expect(screen.queryByTestId('confirm-prompt')).not.toBeInTheDocument();
     vi.unstubAllGlobals();
   });
 

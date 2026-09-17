@@ -41,11 +41,31 @@ def proposal(**overrides) -> dict:
     return base
 
 
+async def seed_decision(db_session, proposed: dict) -> models.AgentDecision:
+    """Бодит `agent_decisions` мөр — `orders.decision_id` нь FK-тэй (N-4)."""
+    row = models.AgentDecision(
+        agent="research",
+        provider="claude-mcp",
+        model="claude-opus-5",
+        session_id="sess-approvals",
+        proposal=proposed,
+        grounding={"passed": True, "unverified_claims": []},
+        risk_evaluation={"decision": "ESCALATE_TO_HUMAN"},
+        outcome="awaiting_approval",
+        created_at=now_utc(),
+    )
+    db_session.add(row)
+    await db_session.flush()
+    return row
+
+
 async def seed(db_session, *, ttl=timedelta(minutes=15), **overrides) -> models.Approval:
+    proposed = proposal(**overrides)
+    decision = await seed_decision(db_session, proposed)
     row = await create_approval(
         db_session,
-        decision_id=uuid.uuid4(),
-        proposed_order=proposal(**overrides),
+        decision_id=decision.id,
+        proposed_order=proposed,
         risk_evaluation={"decision": "ESCALATE_TO_HUMAN", "checks": [], "reason": "notional"},
         ttl=ttl,
     )

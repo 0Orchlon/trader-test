@@ -78,3 +78,18 @@ async def test_system_state_history_is_append_only_by_seq(db_session):
         "active",
         "winding_down",
     ]
+
+
+# --- N-4: `orders`-ийн лавлагаа нь FK-гүй байв (LLD §5.2) ---
+
+
+@pytest.mark.parametrize(
+    ("column", "referred"),
+    (("decision_id", "agent_decisions"), ("approval_id", "approvals")),
+)
+def test_order_references_are_real_foreign_keys(column: str, referred: str):
+    """FK-гүй uuid багана нь «байхгүй мөр рүү заасан» order-ыг зөвшөөрнө —
+    дараа нь replay/attribution нь чимээгүй хоосон үлдэнэ."""
+    target = models.Order.__table__.c[column]
+    assert target.foreign_keys, f"{column}: FK алга"
+    assert {fk.column.table.name for fk in target.foreign_keys} == {referred}
