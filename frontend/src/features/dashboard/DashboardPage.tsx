@@ -132,7 +132,7 @@ export function DashboardPage() {
                   {formatMoney(p.unrealized_pl)}
                 </Table.Td>
                 <Table.Td>
-                  <OriginBadge origin={p.origin} detail={p.origin_detail} />
+                  <OriginBadge origin={p.origin} detail={p.origin_detail} mixed={p.origin_mixed} />
                 </Table.Td>
               </Table.Tr>
             ))}

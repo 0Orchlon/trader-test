@@ -112,3 +112,119 @@ def test_money_serialiser_rejects_float():
     with pytest.raises(TypeError):
         money_field(1.5)
     assert money_field(Decimal("1.5")) == "1.50"
+
+
+# --- B-1: холимог origin далдлагдахгүй (LLD §16.4, §11.1) ---
+
+
+async def _mixed_fill(db_session, symbol: str = "AAPL"):
+    """Нэг symbol дээр ХОЁР origin-ийн fill — AI 10 ш, дараа нь operator 5 ш."""
+    from datetime import timedelta
+
+    from app import models
+    from app.util.time import now_utc
+
+    base = now_utc()
+    db_session.add_all(
+        [
+            models.Order(
+                client_order_id="p3-mix-agent",
+                broker_order_id="brk-mix-agent",
+                symbol=symbol,
+                side="buy",
+                qty=Decimal("10"),
+                filled_qty=Decimal("10"),
+                order_type="market",
+                time_in_force="day",
+                status="filled",
+                origin="research_agent",
+                origin_detail="claude-mcp/claude-opus-5",
+                risk_evaluation={"decision": "APPROVE"},
+                mode="paper",
+                submitted_at=base,
+                filled_at=base,
+            ),
+            models.Order(
+                client_order_id="p3-mix-manual",
+                broker_order_id="brk-mix-manual",
+                symbol=symbol,
+                side="buy",
+                qty=Decimal("5"),
+                filled_qty=Decimal("5"),
+                order_type="market",
+                time_in_force="day",
+                status="filled",
+                origin="manual_operator",
+                origin_detail="operator",
+                risk_evaluation={"decision": "APPROVE"},
+                mode="paper",
+                submitted_at=base + timedelta(minutes=1),
+                filled_at=base + timedelta(minutes=1),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+
+async def test_mixed_symbol_appears_in_every_origin_group(client, broker, db_session):
+    """§16.4 — холимог symbol нь БҮХ холбогдох картад харагдана, далдлахгүй."""
+    await _mixed_fill(db_session)
+    broker.positions = [position("AAPL", "15", "3330.00")]
+
+    body = (await client.get("/api/v1/attribution")).json()
+    origins = {
+        group["origin"]
+        for group in body["groups"]
+        if any(row["symbol"] == "AAPL" for row in group["symbols"])
+    }
+    assert origins == {"research_agent", "manual_operator"}
+    for group in body["groups"]:
+        for row in group["symbols"]:
+            if row["symbol"] == "AAPL":
+                assert row["origin_mixed"] is True
+
+
+async def test_single_origin_symbol_is_not_flagged_mixed(client, broker, seeded_orders):
+    broker.positions = [position("AAPL", "10", "2215.00")]
+    body = (await client.get("/api/v1/attribution")).json()
+    rows = [row for group in body["groups"] for row in group["symbols"]]
+    assert rows, "attribution хоосон байх ёсгүй"
+    assert all(row["origin_mixed"] is False for row in rows)
+
+
+async def test_positions_flag_mixed_origin(client, broker, db_session):
+    await _mixed_fill(db_session)
+    broker.positions = [position("AAPL", "15", "3330.00")]
+    body = (await client.get("/api/v1/positions")).json()
+    assert body["positions"][0]["origin_mixed"] is True
+
+
+# --- B-2: илгээхээс өмнөх notional-ийн quote эх сурвалж (LLD §16.5) ---
+
+
+async def test_get_quote_returns_last_price_with_envelope(client, broker):
+    from tests.fakes import quote
+
+    broker.quotes = {"AAPL": quote("AAPL", "221.50")}
+    response = await client.get("/api/v1/market/quote/AAPL")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["quote"]["last"] == "221.50"
+    assert body["quote"]["symbol"] == "AAPL"
+    assert body["source"] == "alpaca_paper"
+    assert body["stale"] is False
+
+
+async def test_get_quote_marks_stale_instead_of_hiding_it(client, broker):
+    from tests.fakes import quote
+
+    broker.quotes = {"AAPL": quote("AAPL", "221.50")}
+    broker.stale = True
+    body = (await client.get("/api/v1/market/quote/AAPL")).json()
+    assert body["stale"] is True
+
+
+async def test_get_quote_unknown_symbol_is_a_problem_not_a_guess(client, broker):
+    response = await client.get("/api/v1/market/quote/NOPE")
+    assert response.status_code == 503
+    assert response.json()["code"] == "broker_unavailable"

@@ -26,9 +26,12 @@ class Attribution:
     origin_detail: str | None
     #: Нэг symbol дээр олон origin fill хийсэн бол UI ил тэмдэглэнэ (LLD §16.4).
     mixed: bool = False
+    #: Тухайн symbol дээр fill хийсэн БҮХ (origin, detail) хос — сүүлийнх нь
+    #: эхэнд. Холимог symbol-ыг бүх картад гаргахад хэрэглэнэ (LLD §16.4).
+    pairs: tuple[tuple[str, str | None], ...] = ()
 
 
-EXTERNAL = Attribution(Origin.EXTERNAL, None)
+EXTERNAL = Attribution(Origin.EXTERNAL, None, pairs=((Origin.EXTERNAL.value, None),))
 
 
 async def position_origins(session: AsyncSession) -> dict[str, Attribution]:
@@ -47,11 +50,16 @@ async def position_origins(session: AsyncSession) -> dict[str, Attribution]:
     out: dict[str, Attribution] = {}
     for symbol, orders in by_symbol.items():
         latest = max(orders, key=lambda o: (o.filled_at or o.submitted_at))
-        origins = {(o.origin, o.origin_detail) for o in orders}
+        newest_first = (latest.origin, latest.origin_detail)
+        pairs = [newest_first] + sorted(
+            {(o.origin, o.origin_detail) for o in orders} - {newest_first},
+            key=lambda pair: (pair[0], pair[1] or ""),
+        )
         out[symbol] = Attribution(
             origin=Origin(latest.origin),
             origin_detail=latest.origin_detail,
-            mixed=len(origins) > 1,
+            mixed=len(pairs) > 1,
+            pairs=tuple(pairs),
         )
     return out
 
@@ -67,6 +75,7 @@ class SymbolRow:
     position_qty: Decimal | None
     market_value: Decimal | None
     open_order_count: int
+    origin_mixed: bool
     last_decision_at: datetime | None
     last_decision_id: str | None
 
@@ -110,18 +119,29 @@ async def build_groups(
                 "position_qty": None,
                 "market_value": None,
                 "open_order_count": 0,
+                "origin_mixed": False,
             },
         )
 
+    def mixed(symbol: str) -> bool:
+        return symbol in origins and origins[symbol].mixed
+
     for order in open_orders:
-        slot(order.origin, order.origin_detail, order.symbol)["open_order_count"] += 1
+        entry = slot(order.origin, order.origin_detail, order.symbol)
+        entry["open_order_count"] += 1
+        entry["origin_mixed"] = mixed(order.symbol)
 
     for position in positions:
         attribution = origins.get(position.symbol, EXTERNAL)
-        entry = slot(attribution.origin.value, attribution.origin_detail, position.symbol)
-        entry["has_open_position"] = True
-        entry["position_qty"] = position.qty
-        entry["market_value"] = position.market_value
+        # Холимог symbol нь ХОЛБОГДОХ БҮХ картад гарна — далдлахгүй (LLD §16.4).
+        # Позицийн ширхэг/дүн нь давхардана: задаргаа биш, оролцоо гэсэн утгатай
+        # тул `origin_mixed` тэмдэг заавал хамт явна.
+        for origin, detail in attribution.pairs:
+            entry = slot(origin, detail, position.symbol)
+            entry["has_open_position"] = True
+            entry["position_qty"] = position.qty
+            entry["market_value"] = position.market_value
+            entry["origin_mixed"] = attribution.mixed
 
     out: list[tuple[Origin, str | None, list[SymbolRow]]] = []
     for (origin, detail), symbols in grouped.items():
@@ -132,6 +152,7 @@ async def build_groups(
                 position_qty=data["position_qty"],
                 market_value=data["market_value"],
                 open_order_count=data["open_order_count"],
+                origin_mixed=data["origin_mixed"],
                 last_decision_at=(
                     last_decision[symbol].created_at if symbol in last_decision else None
                 ),

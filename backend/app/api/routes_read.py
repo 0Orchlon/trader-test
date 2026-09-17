@@ -93,6 +93,35 @@ async def get_positions(request: Request, machine: StateMachineDep, session: Ses
     )
 
 
+@router.get("/market/quote/{symbol}", operation_id="getQuote")
+async def get_quote(request: Request, machine: StateMachineDep, symbol: str):
+    """Илгээхээс өмнөх notional-ийн эх сурвалж (LLD §16.5).
+
+    Хуучирсан quote-ыг ЗАСАХГҮЙ, `stale` тугаар ил гаргана; quote огт
+    байхгүй бол 503 — таамагласан үнэ буцаахгүй (хавсралт 10).
+    """
+    try:
+        result = await request.app.state.broker.get_quote(symbol.upper())
+    except BrokerUnavailable as exc:
+        raise problem("broker_unavailable", 503, str(exc)) from exc
+    quote = result.data
+    return envelope(
+        {
+            "quote": {
+                "symbol": quote.symbol,
+                "bid": money_field(quote.bid),
+                "ask": money_field(quote.ask),
+                "last": money_field(quote.last),
+                "quote_ts": to_iso(quote.quote_ts),
+            }
+        },
+        source=result.source,
+        system_state=result.system_state,
+        as_of=result.as_of,
+        stale=result.stale,
+    )
+
+
 @router.get("/orders", operation_id="getOrders")
 async def get_orders(
     request: Request,
@@ -142,6 +171,7 @@ async def get_attribution(request: Request, machine: StateMachineDep, session: S
                             "position_qty": qty_field(row.position_qty),
                             "market_value": money_field(row.market_value),
                             "open_order_count": row.open_order_count,
+                            "origin_mixed": row.origin_mixed,
                             "last_decision_at": to_iso(row.last_decision_at),
                             "last_decision_id": row.last_decision_id,
                         }

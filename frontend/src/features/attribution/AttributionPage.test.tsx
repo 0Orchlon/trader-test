@@ -11,7 +11,7 @@ import { screen, waitFor } from '@testing-library/react';
 
 import { AttributionPage } from './AttributionPage';
 import { renderWithProviders, mockFetch } from '@/test/render';
-import { attribution } from '@/test/fixtures';
+import { attribution, mixedAttribution } from '@/test/fixtures';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -67,6 +67,26 @@ describe('AttributionPage', () => {
     renderPage();
     await waitFor(() => expect(screen.getAllByTestId('why-link')).toHaveLength(1));
     expect(screen.getByTestId('why-link')).toHaveAttribute('href', '/decisions?symbol=AAPL');
+  });
+
+  it('холимог origin нь БҮХ картад тэмдэгтэй харагдана (LLD §16.4)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(mockFetch({ '/api/v1/attribution': { body: mixedAttribution } })),
+    );
+    renderWithProviders(<AttributionPage />);
+    await waitFor(() => expect(screen.getAllByTestId('attribution-row')).toHaveLength(2));
+    const groups = screen
+      .getAllByTestId('attribution-group')
+      .map((node) => node.getAttribute('data-origin'));
+    expect(groups.sort()).toEqual(['manual_operator', 'research_agent']);
+    expect(screen.getAllByTestId('mixed-origin-badge')).toHaveLength(2);
+  });
+
+  it('нэг origin-той symbol дээр холимог тэмдэг ГАРАХГҮЙ', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getAllByTestId('attribution-row')).toHaveLength(2));
+    expect(screen.queryByTestId('mixed-origin-badge')).toBeNull();
   });
 
   it('хоосон үед таамаглахгүй, ил хэлнэ', async () => {

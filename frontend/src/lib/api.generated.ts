@@ -59,6 +59,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/market/quote/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сүүлийн quote (илгээхээс өмнөх notional-ийн эх сурвалж)
+         * @description LLD §16.5 — гарын ticket дээрх «тооцоолсон notional» нь ЭНЭ утгаас
+         *     бодогдоно, operator-ийн бичсэн үнээс БИШ. Quote хуучирсан бол
+         *     `stale: true` — далдлахгүй. Quote огт байхгүй бол 503, таамагласан
+         *     үнэ ХЭЗЭЭ Ч буцаахгүй.
+         */
+        get: operations["getQuote"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/orders": {
         parameters: {
             query?: never;
@@ -547,6 +570,31 @@ export interface components {
         AccountEnvelope: components["schemas"]["Envelope"] & {
             account: components["schemas"]["Account"];
         };
+        Quote: {
+            symbol: string;
+            bid: components["schemas"]["Money"];
+            ask: components["schemas"]["Money"];
+            last: components["schemas"]["Money"];
+            quote_ts: components["schemas"]["Utc"];
+        };
+        /**
+         * @example {
+         *       "source": "alpaca_paper",
+         *       "as_of": "2026-09-16T14:30:00Z",
+         *       "stale": false,
+         *       "system_state": "active",
+         *       "quote": {
+         *         "symbol": "AAPL",
+         *         "bid": "221.48",
+         *         "ask": "221.52",
+         *         "last": "221.50",
+         *         "quote_ts": "2026-09-16T14:29:58Z"
+         *       }
+         *     }
+         */
+        QuoteEnvelope: components["schemas"]["Envelope"] & {
+            quote: components["schemas"]["Quote"];
+        };
         Position: {
             symbol: string;
             qty: components["schemas"]["Quantity"];
@@ -558,6 +606,8 @@ export interface components {
             origin: components["schemas"]["Origin"];
             /** @description `research_agent` үед provider/model; `manual_operator` үед actor; `external` үед `null`. */
             origin_detail?: string | null;
+            /** @description Энэ symbol дээр НЭГЭЭС ОЛОН origin fill хийсэн (LLD §11.1). `origin` нь сүүлийн fill-ийнх — бүтэн задаргаа БИШ. UI үүнийг ил тэмдэглэнэ, далдлахгүй (LLD §16.4). */
+            origin_mixed: boolean;
         };
         /**
          * @example {
@@ -574,7 +624,8 @@ export interface components {
          *           "market_value": "9012.00",
          *           "unrealized_pl": "156.00",
          *           "origin": "research_agent",
-         *           "origin_detail": "claude-mcp/claude-opus-5"
+         *           "origin_detail": "claude-mcp/claude-opus-5",
+         *           "origin_mixed": false
          *         },
          *         {
          *           "symbol": "MSFT",
@@ -584,7 +635,8 @@ export interface components {
          *           "market_value": "4870.80",
          *           "unrealized_pl": "-54.40",
          *           "origin": "manual_operator",
-         *           "origin_detail": "operator"
+         *           "origin_detail": "operator",
+         *           "origin_mixed": true
          *         },
          *         {
          *           "symbol": "TSLA",
@@ -594,7 +646,8 @@ export interface components {
          *           "market_value": "1252.50",
          *           "unrealized_pl": "8.00",
          *           "origin": "external",
-         *           "origin_detail": null
+         *           "origin_detail": null,
+         *           "origin_mixed": false
          *         }
          *       ]
          *     }
@@ -871,6 +924,7 @@ export interface components {
          *               "position_qty": "40",
          *               "market_value": "9012.00",
          *               "open_order_count": 0,
+         *               "origin_mixed": false,
          *               "last_decision_at": "2026-09-16T13:55:02Z",
          *               "last_decision_id": "3c9d8e7f-6a5b-4c3d-8e1f-0a9b8c7d6e5f"
          *             }
@@ -886,6 +940,7 @@ export interface components {
          *               "position_qty": "12",
          *               "market_value": "4870.80",
          *               "open_order_count": 1,
+         *               "origin_mixed": true,
          *               "last_decision_at": null,
          *               "last_decision_id": null
          *             }
@@ -901,6 +956,7 @@ export interface components {
          *               "position_qty": "5",
          *               "market_value": "1252.50",
          *               "open_order_count": 0,
+         *               "origin_mixed": false,
          *               "last_decision_at": null,
          *               "last_decision_id": null
          *             }
@@ -920,6 +976,8 @@ export interface components {
                     position_qty?: components["schemas"]["Quantity"];
                     market_value?: components["schemas"]["Money"];
                     open_order_count: number;
+                    /** @description Symbol нь олон origin-той (LLD §11.1). Ийм symbol холбогдох БҮХ бүлэгт давхар гарна — далдлахгүй (LLD §16.4). Нийлбэр гаргахдаа давхардлыг тооцно. */
+                    origin_mixed: boolean;
                     /** Format: date-time */
                     last_decision_at?: string | null;
                     /** Format: uuid */
@@ -1338,6 +1396,29 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PositionsEnvelope"];
+                };
+            };
+            503: components["responses"]["BrokerUnavailable"];
+        };
+    };
+    getQuote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteEnvelope"];
                 };
             };
             503: components["responses"]["BrokerUnavailable"];

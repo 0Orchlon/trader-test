@@ -13,6 +13,7 @@ export type Problem = Schemas['Problem'];
 export type SystemStateEnvelope = Schemas['SystemStateEnvelope'];
 export type AccountEnvelope = Schemas['AccountEnvelope'];
 export type PositionsEnvelope = Schemas['PositionsEnvelope'];
+export type QuoteEnvelope = Schemas['QuoteEnvelope'];
 export type OrdersEnvelope = Schemas['OrdersEnvelope'];
 export type AttributionEnvelope = Schemas['AttributionEnvelope'];
 export type ApprovalsEnvelope = Schemas['ApprovalsEnvelope'];
@@ -92,6 +93,7 @@ export const api = {
   positions: () => request<PositionsEnvelope>('/positions'),
   orders: (query = 'status=open') => request<OrdersEnvelope>(`/orders?${query}`),
   attribution: () => request<AttributionEnvelope>('/attribution'),
+  quote: (symbol: string) => request<QuoteEnvelope>(`/market/quote/${encodeURIComponent(symbol)}`),
   approvals: (state = 'pending') => request<ApprovalsEnvelope>(`/approvals?state=${state}`),
   decisions: (query = '') => request<AgentDecisionsEnvelope>(`/agent-decisions?${query}`),
   decision: (id: string) => request<AgentDecisionDetail>(`/agent-decisions/${id}`),

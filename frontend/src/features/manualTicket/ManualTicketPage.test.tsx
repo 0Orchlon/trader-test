@@ -12,7 +12,14 @@ import userEvent from '@testing-library/user-event';
 
 import { ManualTicketPage, allowedSides, idempotencyKeyFor } from './ManualTicketPage';
 import { renderWithProviders, mockFetch } from '@/test/render';
-import { haltedState, positions, systemState, windingDownState } from '@/test/fixtures';
+import {
+  haltedState,
+  positions,
+  quote,
+  staleQuote,
+  systemState,
+  windingDownState,
+} from '@/test/fixtures';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -21,6 +28,7 @@ function renderTicket(state = systemState, extra: Record<string, { status?: numb
     mockFetch({
       '/api/v1/system/state': { body: state },
       '/api/v1/positions': { body: positions },
+      '/api/v1/market/quote/': { body: quote },
       ...extra,
     }),
   );
@@ -51,25 +59,26 @@ describe('allowedSides (AC-33)', () => {
 });
 
 describe('idempotencyKeyFor', () => {
-  it('ижил бие → ижил key (баталгаажуулалтын хоёр дахь дуудалт)', () => {
-    const body = { symbol: 'AAPL', side: 'buy', qty: '10', order_type: 'limit', time_in_force: 'day' } as const;
-    expect(idempotencyKeyFor(body)).toBe(idempotencyKeyFor({ ...body }));
+  const body = { symbol: 'AAPL', side: 'buy', qty: '10', order_type: 'limit', time_in_force: 'day' } as const;
+
+  it('ижил бие + ижил оролдлого → ижил key (баталгаажуулалтын хоёр дахь дуудалт)', () => {
+    expect(idempotencyKeyFor(body, 'attempt-1')).toBe(idempotencyKeyFor({ ...body }, 'attempt-1'));
+  });
+
+  it('ижил бие + ШИНЭ оролдлого → ӨӨР key (B-3: давтсан order залгигдахгүй)', () => {
+    expect(idempotencyKeyFor(body, 'attempt-1')).not.toBe(idempotencyKeyFor(body, 'attempt-2'));
   });
 
   it('өөр бие → өөр key', () => {
-    const base = { symbol: 'AAPL', side: 'buy', qty: '10', order_type: 'limit', time_in_force: 'day' } as const;
-    expect(idempotencyKeyFor(base)).not.toBe(idempotencyKeyFor({ ...base, qty: '11' }));
+    expect(idempotencyKeyFor(body, 'attempt-1')).not.toBe(
+      idempotencyKeyFor({ ...body, qty: '11' }, 'attempt-1'),
+    );
   });
 
   it('UUID хэлбэртэй', () => {
-    const key = idempotencyKeyFor({
-      symbol: 'AAPL',
-      side: 'buy',
-      qty: '10',
-      order_type: 'limit',
-      time_in_force: 'day',
-    });
-    expect(key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(idempotencyKeyFor(body, 'attempt-1')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
   });
 });
 
@@ -87,13 +96,46 @@ describe('ManualTicketPage', () => {
     expect(screen.getByTestId('wind-down-notice')).toHaveTextContent('БАГАСГАХ');
   });
 
-  it('notional нь тэмдэгт мөрөөр тооцогдоно', async () => {
+  it('notional нь сүүлийн quote-оос тооцогдоно (LLD §16.5)', async () => {
     renderTicket();
     await userEvent.type(screen.getByTestId('ticket-symbol'), 'AAPL');
     await userEvent.type(screen.getByTestId('ticket-qty'), '10');
     await userEvent.type(screen.getByTestId('ticket-limit-price'), '221.50');
     await waitFor(() =>
       expect(screen.getByTestId('ticket-notional')).toHaveTextContent('$2,215.00'),
+    );
+  });
+
+  it('market order дээр ч дүн харагдана — limit үнэ бичих боломжгүй ч', async () => {
+    renderTicket();
+    await userEvent.type(screen.getByTestId('ticket-symbol'), 'AAPL');
+    await userEvent.type(screen.getByTestId('ticket-qty'), '10');
+    await userEvent.click(screen.getByTestId('ticket-order-type'));
+    await userEvent.click(await screen.findByText('Market'));
+    expect(screen.getByTestId('ticket-limit-price')).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.getByTestId('ticket-notional')).toHaveTextContent('$2,215.00'),
+    );
+  });
+
+  it('хуучирсан quote нь ИЛ тэмдэгтэй', async () => {
+    renderTicket(systemState, { '/api/v1/market/quote/': { body: staleQuote } });
+    await userEvent.type(screen.getByTestId('ticket-symbol'), 'AAPL');
+    await userEvent.type(screen.getByTestId('ticket-qty'), '10');
+    await waitFor(() => expect(screen.getByTestId('quote-stale')).toBeInTheDocument());
+  });
+
+  it('quote байхгүй бол дүн ЗОХИОХГҮЙ, шалтгааныг хэлнэ', async () => {
+    renderTicket(systemState, {
+      '/api/v1/market/quote/': {
+        status: 503,
+        body: { type: 'x', title: 'x', status: 503, code: 'broker_unavailable', detail: 'quote алга' },
+      },
+    });
+    await userEvent.type(screen.getByTestId('ticket-symbol'), 'NOPE');
+    await userEvent.type(screen.getByTestId('ticket-qty'), '10');
+    await waitFor(() =>
+      expect(screen.getByTestId('ticket-notional')).toHaveTextContent('quote байхгүй'),
     );
   });
 
@@ -175,6 +217,50 @@ describe('ManualTicketPage', () => {
       .map((headers) => headers['Idempotency-Key']);
     expect(keys).toHaveLength(2);
     expect(keys[0]).toBe(keys[1]);
+  });
+
+  it('ижил маягтыг ДАХИН илгээхэд ӨӨР Idempotency-Key явна (B-3)', async () => {
+    const accepted = {
+      source: 'alpaca_paper',
+      as_of: '2026-09-16T14:30:00Z',
+      stale: false,
+      system_state: 'active',
+      order: {
+        id: 'o-1',
+        broker_order_id: null,
+        client_order_id: 'p3-abc123',
+        symbol: 'AAPL',
+        side: 'buy',
+        qty: '10',
+        filled_qty: '0',
+        order_type: 'limit',
+        time_in_force: 'day',
+        status: 'accepted',
+        origin: 'manual_operator',
+        origin_detail: 'operator',
+        decision_id: null,
+        submitted_at: '2026-09-16T14:30:00Z',
+      },
+      risk: { decision: 'APPROVE', reason: null, evaluated_at: '2026-09-16T14:30:00Z', checks: [] },
+    };
+    const { fetchMock } = renderTicket(systemState, {
+      '/api/v1/orders/manual': { status: 202, body: accepted },
+    });
+
+    await userEvent.type(screen.getByTestId('ticket-symbol'), 'AAPL');
+    await userEvent.type(screen.getByTestId('ticket-qty'), '10');
+    await userEvent.click(screen.getByTestId('ticket-submit'));
+    await waitFor(() => expect(screen.getByTestId('ticket-accepted')).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId('ticket-submit'));
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([url]) => String(url).includes('/orders/manual'));
+      expect(calls).toHaveLength(2);
+    });
+    const keys = fetchMock.mock.calls
+      .filter((call) => String(call[0]).includes('/orders/manual'))
+      .map((call) => ((call[1]?.headers ?? {}) as Record<string, string>)['Idempotency-Key']);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 
   it('Risk татгалзвал шалтгаан + бүх шалгалт харагдана', async () => {

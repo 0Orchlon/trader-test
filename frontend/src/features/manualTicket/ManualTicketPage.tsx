@@ -12,7 +12,7 @@
  * **Зориудаар БАЙХГҮЙ:** one-click order, chart-аас чирж тавих, «дахин
  * худалдан ав» товч (спек §8-ийн dark-pattern хориг, `plan.md` P-8).
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Badge,
@@ -84,10 +84,23 @@ export function ManualTicketPage() {
   const sides = allowedSides(state, position?.qty ?? null);
   const halted = state === 'halted';
 
+  // Notional нь СҮҮЛИЙН QUOTE-оос (LLD §16.5) — operator-ийн бичсэн үнээс БИШ.
+  // Risk Agent-ийн R9 ч ижил лавлах үнэ ашигладаг тул дэлгэц дээрх дүн нь
+  // backend-ийн шалгах дүнтэй нэг утгатай.
+  const ticker = symbol.trim().toUpperCase();
+  const quote = useQuery({
+    queryKey: ['quote', ticker],
+    queryFn: () => api.quote(ticker),
+    enabled: ticker !== '',
+    refetchInterval: 10_000,
+    retry: false,
+  });
+
   const notional = useMemo(() => {
-    if (!qty || !limitPrice) return null;
-    return multiply(qty, limitPrice);
-  }, [qty, limitPrice]);
+    const last = quote.data?.quote.last;
+    if (!qty || !last) return null;
+    return multiply(qty, last);
+  }, [qty, quote.data]);
 
   const body: ManualOrderRequest = useMemo(
     () => ({
@@ -102,13 +115,17 @@ export function ManualTicketPage() {
     [symbol, side, qty, orderType, limitPrice, stopPrice],
   );
 
+  // Илгээх ОРОЛДЛОГЫН таних тэмдэг. Баталгаажуулалтын хоёр дахь дуудалт нь
+  // ИЖИЛ оролдлого (ижил key), харин operator ижил маягтыг дахин илгээвэл
+  // ШИНЭ оролдлого — эс бөгөөс backend-ийн дедуп хуучин order-ыг буцааж,
+  // UI нь илгээгээгүй order-ыг «хүлээн авав» гэж баталгаажуулна.
+  const attempt = useRef(newAttempt());
+
   const submit = useMutation({
     mutationFn: (token?: string) =>
-      // Idempotency-Key нь БИЕ тутамд тогтмол: баталгаажуулалтын хоёр
-      // дахь дуудалт нь ижил key-тэй явна, давхар order үүсэхгүй.
       api.manualOrder(
         token ? { ...body, confirmation_token: token } : body,
-        idempotencyKeyFor(body),
+        idempotencyKeyFor(body, attempt.current),
       ),
     onSuccess: (result) => {
       setPreview(result.risk);
@@ -216,17 +233,29 @@ export function ManualTicketPage() {
           </Group>
 
           <Group justify="space-between">
-            <Text size="sm" data-testid="ticket-notional">
-              Тооцоолсон notional: <b>{formatMoney(notional)}</b>
-              {position ? ` · одоогийн позиц ${position.qty} ш` : ''}
-            </Text>
+            <Group gap={8}>
+              <Text size="sm" data-testid="ticket-notional">
+                Тооцоолсон notional:{' '}
+                <b>{quote.isError ? 'quote байхгүй' : formatMoney(notional)}</b>
+                {quote.data ? ` (сүүлийн үнэ ${formatMoney(quote.data.quote.last)})` : ''}
+                {position ? ` · одоогийн позиц ${position.qty} ш` : ''}
+              </Text>
+              {quote.data?.stale ? (
+                <Badge color="orange" variant="outline" data-testid="quote-stale">
+                  quote хуучирсан
+                </Badge>
+              ) : null}
+            </Group>
             <Button
               type="submit"
               leftSection={<IconSend size={16} />}
               loading={submit.isPending}
               disabled={!canSubmit}
               data-testid="ticket-submit"
-              onClick={() => submit.mutate(undefined)}
+              onClick={() => {
+                attempt.current = newAttempt();
+                submit.mutate(undefined);
+              }}
             >
               Илгээх
             </Button>
@@ -321,14 +350,22 @@ export function RiskPreview({ risk }: { risk: RiskEvaluation }) {
   );
 }
 
+/** Илгээх оролдлого бүрийн давтагдашгүй тэмдэг. */
+function newAttempt(): string {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 /**
- * `Idempotency-Key` нь БИЕЭС гаргасан тогтмол UUID.
+ * `Idempotency-Key` = бие + ОРОЛДЛОГО.
  *
- * Санамсаргүй key бол баталгаажуулалтын хоёр дахь дуудалт нь ӨӨР key-тэй
- * очиж, идемпотент байдал алдагдана. Ижил бие = ижил key.
+ * Зөвхөн биеэс гаргавал ижил параметртэй order мөнхөд ижил key авч,
+ * backend-ийн дедуп (LLD §9.2) хуучин order-ыг буцаана — operator шинэ
+ * order илгээсэн гэж итгэнэ. Оролдлогын тэмдэг нь баталгаажуулалтын хоёр
+ * дахь дуудалтад ТОГТМОЛ, дараагийн илгээлтэд ШИНЭ.
  */
-export function idempotencyKeyFor(body: ManualOrderRequest): string {
+export function idempotencyKeyFor(body: ManualOrderRequest, attempt: string): string {
   const canonical = JSON.stringify([
+    attempt,
     body.symbol,
     body.side,
     body.qty,

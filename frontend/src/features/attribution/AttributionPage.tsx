@@ -31,11 +31,35 @@ export const ORIGIN_COLOR: Record<Origin, string> = {
   external: 'gray',
 };
 
-export function OriginBadge({ origin, detail }: { origin: Origin; detail?: string | null }) {
+export function OriginBadge({
+  origin,
+  detail,
+  mixed = false,
+}: {
+  origin: Origin;
+  detail?: string | null;
+  mixed?: boolean;
+}) {
   return (
-    <Badge color={ORIGIN_COLOR[origin]} variant="light" data-testid="origin-badge" data-origin={origin}>
-      {ORIGIN_LABEL[origin]}
-      {detail ? ` · ${detail}` : ''}
+    <Group gap={4}>
+      <Badge color={ORIGIN_COLOR[origin]} variant="light" data-testid="origin-badge" data-origin={origin}>
+        {ORIGIN_LABEL[origin]}
+        {detail ? ` · ${detail}` : ''}
+      </Badge>
+      {mixed ? <MixedOriginBadge /> : null}
+    </Group>
+  );
+}
+
+/**
+ * Нэг symbol дээр олон origin (LLD §11.1). Ийм symbol нь холбогдох БҮХ
+ * картад гарна — аль нэгэнд нь далдлахгүй (LLD §16.4). `origin` нь
+ * сүүлийн fill-ийнх тул энэ тэмдэггүйгээр «зөвхөн тэр эзэн» гэж уншигдана.
+ */
+export function MixedOriginBadge() {
+  return (
+    <Badge color="orange" variant="outline" data-testid="mixed-origin-badge">
+      холимог origin
     </Badge>
   );
 }
@@ -101,7 +125,12 @@ export function AttributionPage() {
             <Table.Tbody>
               {group.symbols.map((row) => (
                 <Table.Tr key={row.symbol} data-testid="attribution-row" data-symbol={row.symbol}>
-                  <Table.Td fw={600}>{row.symbol}</Table.Td>
+                  <Table.Td fw={600}>
+                    <Group gap={6}>
+                      {row.symbol}
+                      {row.origin_mixed ? <MixedOriginBadge /> : null}
+                    </Group>
+                  </Table.Td>
                   <Table.Td>
                     {row.has_open_position ? `${formatQuantity(row.position_qty)} ш` : 'позицгүй'}
                   </Table.Td>

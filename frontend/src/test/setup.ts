@@ -22,6 +22,10 @@ if (!globalThis.ResizeObserver) {
   } as unknown as typeof ResizeObserver;
 }
 
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 if (!window.scrollTo) {
   window.scrollTo = (() => {}) as typeof window.scrollTo;
 }

@@ -7,6 +7,7 @@
  */
 import type {
   AccountEnvelope,
+  QuoteEnvelope,
   ApprovalsEnvelope,
   AttributionEnvelope,
   Health,
@@ -91,6 +92,7 @@ export const positions: PositionsEnvelope = {
       unrealized_pl: '156.00',
       origin: 'research_agent',
       origin_detail: 'claude-mcp/claude-opus-5',
+      origin_mixed: false,
     },
     {
       symbol: 'TSLA',
@@ -101,6 +103,7 @@ export const positions: PositionsEnvelope = {
       unrealized_pl: '8.00',
       origin: 'external',
       origin_detail: null,
+      origin_mixed: false,
     },
   ],
 };
@@ -140,6 +143,7 @@ export const attribution: AttributionEnvelope = {
           position_qty: '40',
           market_value: '9012.00',
           open_order_count: 0,
+          origin_mixed: false,
           last_decision_at: '2026-09-16T13:55:02Z',
           last_decision_id: '3c9d8e7f-6a5b-4c3d-8e1f-0a9b8c7d6e5f',
         },
@@ -155,6 +159,7 @@ export const attribution: AttributionEnvelope = {
           position_qty: '5',
           market_value: '1252.50',
           open_order_count: 0,
+          origin_mixed: false,
           last_decision_at: null,
           last_decision_id: null,
         },
@@ -162,6 +167,58 @@ export const attribution: AttributionEnvelope = {
     },
   ],
 };
+
+/** Холимог origin — нэг symbol хоёр картад (LLD §16.4). */
+export const mixedAttribution: AttributionEnvelope = {
+  ...ENVELOPE,
+  groups: [
+    {
+      origin: 'research_agent',
+      origin_detail: 'claude-mcp/claude-opus-5',
+      symbols: [
+        {
+          symbol: 'AAPL',
+          has_open_position: true,
+          position_qty: '15',
+          market_value: '3330.00',
+          open_order_count: 0,
+          origin_mixed: true,
+          last_decision_at: '2026-09-16T13:55:02Z',
+          last_decision_id: '3c9d8e7f-6a5b-4c3d-8e1f-0a9b8c7d6e5f',
+        },
+      ],
+    },
+    {
+      origin: 'manual_operator',
+      origin_detail: 'operator',
+      symbols: [
+        {
+          symbol: 'AAPL',
+          has_open_position: true,
+          position_qty: '15',
+          market_value: '3330.00',
+          open_order_count: 0,
+          origin_mixed: true,
+          last_decision_at: null,
+          last_decision_id: null,
+        },
+      ],
+    },
+  ],
+};
+
+export const quote: QuoteEnvelope = {
+  ...ENVELOPE,
+  quote: {
+    symbol: 'AAPL',
+    bid: '221.48',
+    ask: '221.52',
+    last: '221.50',
+    quote_ts: '2026-09-16T14:29:58Z',
+  },
+};
+
+export const staleQuote: QuoteEnvelope = { ...quote, stale: true };
 
 export const approvals: ApprovalsEnvelope = {
   ...ENVELOPE,
