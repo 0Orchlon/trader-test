@@ -1,0 +1,199 @@
+asyncapi: 3.0.0
+info:
+  title: PERSONAL-3 — Frontend WebSocket
+  version: 1.1.0
+  description: |
+    Нэг WebSocket холболт (`/ws`), олон logical суваг. Backend нь Redis
+    pub/sub-аас уншаад холбогдсон клиентүүдэд fan-out хийнэ.
+
+    **Backpressure бодлого:** `system` суваг ХЭЗЭЭ Ч хаягдахгүй. Ачаалал
+    үед `ticks` сувгийн мессеж хаягдаж болно (сүүлийнх нь ялна), `orders`
+    ба `agent-decisions` нь дарааллаараа хадгалагдана. Клиент `seq`-ийн
+    тасалдлыг илрүүлбэл REST-ээр дахин авна.
+
+    **Staleness:** сервер `HEARTBEAT_SECONDS` тутам `heartbeat` илгээнэ.
+    Клиент 5 секунд мессеж аваагүй бол «stale» banner гаргана (AC-2) —
+    сервер эрүүл гэж мэдэгдэх хүртэл.
+
+servers:
+  local:
+    host: localhost:8000
+    pathname: /ws
+    protocol: ws
+
+channels:
+  ticks:
+    address: "ticks:{symbol}"
+    description: |
+      **v1-д нийтлэгддэггүй — нөөцлөгдсөн суваг.** Quote нь REST-ээс
+      (`GET /market/quote/{symbol}`) ирдэг; market-data WS нь дараагийн
+      хувилбарын ажил. Суваг нь backpressure бодлогын жишиг болж үлдэнэ.
+    parameters:
+      symbol:
+        description: Alpaca symbol
+    messages:
+      tick:
+        $ref: "#/components/messages/Tick"
+  orders:
+    address: orders
+    messages:
+      orderUpdate:
+        $ref: "#/components/messages/OrderUpdate"
+  agentDecisions:
+    address: agent-decisions
+    messages:
+      decision:
+        $ref: "#/components/messages/DecisionEvent"
+  system:
+    address: system
+    description: |
+      Хамгийн өндөр эрэмбэ. Kill switch, wind-down, circuit breaker, provider
+      switch, approval-ийн өөрчлөлт — бүгд энд. Backpressure үед ч хаягдахгүй.
+    messages:
+      systemEvent:
+        $ref: "#/components/messages/SystemEvent"
+
+operations:
+  receiveTick:
+    action: receive
+    channel:
+      $ref: "#/channels/ticks"
+  receiveOrderUpdate:
+    action: receive
+    channel:
+      $ref: "#/channels/orders"
+  receiveDecision:
+    action: receive
+    channel:
+      $ref: "#/channels/agentDecisions"
+  receiveSystemEvent:
+    action: receive
+    channel:
+      $ref: "#/channels/system"
+
+components:
+  messages:
+    Tick:
+      payload:
+        type: object
+        required: [seq, symbol, price, ts, source, stale]
+        properties:
+          seq:
+            type: integer
+          symbol:
+            type: string
+          price:
+            type: string
+            pattern: '^[0-9]+\.[0-9]+$'
+          ts:
+            type: string
+            format: date-time
+          source:
+            type: string
+            enum: [alpaca_live, alpaca_paper]
+          stale:
+            type: boolean
+            description: Талбар үргэлж БАЙНА. Орхих нь таамаглах цонх үүсгэнэ.
+    OrderUpdate:
+      payload:
+        type: object
+        required: [seq, order_id, status, origin, ts, source]
+        properties:
+          seq:
+            type: integer
+          order_id:
+            type: [string, "null"]
+            format: uuid
+            description: |
+              Alpaca UI-аас гараар нээсэн order-ийн шинэчлэлт локал мөргүй
+              ирнэ — тэр үед `null`, `origin` нь `external`. Локал id
+              ЗОХИОХГҮЙ (худал гарал үүсэл үүсгэхгүй).
+          broker_order_id:
+            type: [string, "null"]
+          symbol:
+            type: string
+          status:
+            type: string
+          filled_qty:
+            type: string
+          filled_avg_price:
+            type: [string, "null"]
+          origin:
+            type: string
+            enum: [research_agent, auto_tuning, manual_operator, external]
+          origin_detail:
+            type: [string, "null"]
+          ts:
+            type: string
+            format: date-time
+          source:
+            type: string
+            enum: [alpaca_live, alpaca_paper]
+    DecisionEvent:
+      payload:
+        type: object
+        required: [seq, decision_id, agent, provider, model, outcome, grounded_in, ts]
+        properties:
+          seq:
+            type: integer
+          decision_id:
+            type: string
+            format: uuid
+          agent:
+            type: string
+          provider:
+            type: string
+          model:
+            type: string
+          symbol:
+            type: string
+          outcome:
+            type: string
+          grounded_in:
+            type: array
+            items:
+              type: string
+              format: uuid
+          ts:
+            type: string
+            format: date-time
+    SystemEvent:
+      payload:
+        type: object
+        required: [seq, event, ts]
+        properties:
+          seq:
+            type: integer
+          event:
+            type: string
+            enum:
+              - state_changed
+              - kill_switch_engaged
+              - wind_down_started
+              - wind_down_expired
+              - activated
+              - breaker_tripped
+              - provider_switched
+              - approval_created
+              - approval_resolved
+              - broker_unreachable
+              - stream_stale
+              - stream_live
+              - heartbeat
+          state:
+            type: string
+            enum: [active, winding_down, halted]
+          reason:
+            type: [string, "null"]
+          wind_down_deadline:
+            type: [string, "null"]
+            format: date-time
+          seconds_remaining:
+            type: [integer, "null"]
+          detail:
+            type: object
+            additionalProperties: true
+          ts:
+            type: string
+            format: date-time
+

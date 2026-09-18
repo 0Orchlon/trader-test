@@ -1,0 +1,1850 @@
+openapi: 3.1.0
+info:
+  title: PERSONAL-3 Alpaca Trading System — Operator API
+  version: 1.1.0
+  license:
+    name: Proprietary — PERSONAL-3 operator only
+    identifier: LicenseRef-PERSONAL-3-Proprietary
+  description: |
+    Ганц operator-т зориулсан арилжааны системийн REST API.
+
+    **Бүх хариунд хүчинтэй гурван үл хөдлөх дүрэм:**
+    1. Мөнгөн утга бүр **тэмдэгт мөр** хэлбэрийн fixed-point decimal
+       (`"10234.56"`). Float ХЭЗЭЭ Ч биш (AC-25).
+    2. Timestamp бүр UTC, RFC 3339, `Z` төгсгөлтэй (AC-26).
+    3. Өгөгдөлтэй хариу бүр `source` талбартай ба нэг хариу дотор
+       ХОЛИМОГ `source` байхыг хориглоно (AC-20, AC-21).
+
+    **Аюулгүйн гэрээ:** энэ API-д Alpaca руу order илгээх ЦОРЫН ГАНЦ зам нь
+    `POST /orders/manual` ба approval queue-ийн `approve` хоёр. Хоёул дотооддоо
+    Risk Agent → Execution модулиар дамжина. LLM нь энэ API-д огт хүрэхгүй —
+    LLM зөвхөн Tool Contract (энэ файлын 3-р баримт) руу ханддаг.
+servers:
+  - url: http://localhost:8000/api/v1
+    description: DEV (paper)
+  - url: https://{host}/api/v1
+    description: UAT / Prod
+    variables:
+      host:
+        default: trader.internal
+
+tags:
+  - name: read
+    description: Alpaca-ийн бодит байдлыг уншина (тооцоолол нэмэхгүй)
+  - name: orders
+    description: Order-ийн амьдралын мөчлөг
+  - name: approvals
+    description: Босгоос дээш order-ийн хүний зөвшөөрөл
+  - name: system
+    description: Төлөвийн машин, kill switch, эрүүл мэнд
+  - name: agents
+    description: Agent-ийн шийдвэр, provider-ийн удирдлага
+  - name: tuning
+    description: Хязгаартай auto-tuning
+
+security:
+  - operatorSession: []
+
+paths:
+
+  /health:
+    get:
+      operationId: getHealth
+      tags: [system]
+      summary: Liveness / readiness + Alpaca холболтын төлөв
+      security: []
+      responses:
+        "200":
+          description: Эрүүл. `degraded` байж болно — статус кодоор биш, биеэр нь заана.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /account:
+    get:
+      operationId: getAccount
+      tags: [read]
+      summary: Дансны хормын хувилбар (Alpaca-ийн буцаасан утга, өөрчлөлтгүй)
+      description: |
+        AC-1: талбар бүр Alpaca REST-ийн хариунаас ШУУД гарна. Backend нь
+        equity, buying power зэргийг локалаар ХЭЗЭЭ Ч дахин тооцохгүй.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountEnvelope"
+        "503":
+          $ref: "#/components/responses/BrokerUnavailable"
+
+  /positions:
+    get:
+      operationId: getPositions
+      tags: [read]
+      summary: Нээлттэй позицууд (origin-той)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PositionsEnvelope"
+        "503":
+          $ref: "#/components/responses/BrokerUnavailable"
+
+  /market/quote/{symbol}:
+    get:
+      operationId: getQuote
+      tags: [read]
+      summary: Сүүлийн quote (илгээхээс өмнөх notional-ийн эх сурвалж)
+      description: |
+        LLD §16.5 — гарын ticket дээрх «тооцоолсон notional» нь ЭНЭ утгаас
+        бодогдоно, operator-ийн бичсэн үнээс БИШ. Quote хуучирсан бол
+        `stale: true` — далдлахгүй. Quote огт байхгүй бол 503, таамагласан
+        үнэ ХЭЗЭЭ Ч буцаахгүй.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteEnvelope"
+        "503":
+          $ref: "#/components/responses/BrokerUnavailable"
+
+  /orders:
+    get:
+      operationId: getOrders
+      tags: [read, orders]
+      summary: Order-ийн түүх
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, closed, all]
+            default: open
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: origin
+          in: query
+          schema:
+            $ref: "#/components/schemas/Origin"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrdersEnvelope"
+
+  /orders/manual:
+    post:
+      operationId: postOrdersManual
+      tags: [orders]
+      summary: Operator-ийн гараар илгээх order (FR-12, AC-31…AC-33)
+      description: |
+        Agent-ийн order-той ЯГ ИЖИЛ зам: Risk Agent → Execution → Alpaca.
+        Тусдаа, хаалтгүй зам БАЙХГҮЙ.
+
+        **Төлөвийн хараат байдал (AC-33):**
+        - `halted`        → 409 `system_halted`, Alpaca руу 0 дуудалт.
+        - `winding_down`  → зөвхөн эрсдэл БАГАСГАХ order; нэмэгдүүлэх нь
+                            422 `winding_down_increase_blocked`.
+        - `active`        → Risk-ийн ердийн шалгалт.
+
+        **Хоёр шаттай баталгаажуулалт:** Risk `ESCALATE_TO_HUMAN` буцаавал
+        (жишээ нь notional > `MAX_ORDER_NOTIONAL`) backend нь 409 +
+        `confirmation` объект буцаана. Дуудагч ЯГ ижил биеийг
+        `confirmation_token`-той дахин илгээнэ. Approval queue-д мөр
+        ҮҮСГЭХГҮЙ — operator өөрөө шууд энд байна (спек A-8).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManualOrderRequest"
+      responses:
+        "202":
+          description: Risk дамжсан, Execution-д хүлээн авсан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderAccepted"
+        "409":
+          description: |
+            Баталгаажуулалт шаардлагатай (`confirmation_required`), эсвэл
+            систем `halted` (`system_halted`), эсвэл `Idempotency-Key`
+            давхардсан боловч бие өөр (`idempotency_conflict`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: Risk Agent татгалзав (`risk_rejected`) — шалтгаан биед
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /orders/{orderId}/cancel:
+    post:
+      operationId: postOrdersByOrderIdCancel
+      tags: [orders]
+      summary: Нээлттэй order-ыг цуцлах (хүний үйлдэл)
+      description: |
+        Цуцлалт нь эрсдэл БАГАСГАХ үйлдэл тул `winding_down` үед
+        зөвшөөрөгдөнө. `halted` үед МӨН зөвшөөрөгдөнө — kill switch нь
+        ШИНЭ order илгээхийг зогсоодог, байгаа order-ыг цуцлахыг биш
+        (спек A-2).
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "202":
+          description: Цуцлах хүсэлт Alpaca руу илгээгдэв
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /attribution:
+    get:
+      operationId: getAttribution
+      tags: [read]
+      summary: «Хэн юунд арилжаа хийж байна» (FR-11, AC-30)
+      description: |
+        Гаралт нь `orders` / `positions`-ийн БОДИТ мөрөөс угсарна. Тусдаа
+        тооцоолсон кэш БАЙХГҮЙ — тиймээс энд гарсан symbol бүр дор хаяж
+        нэг мөрөнд буцаж холбогдоно.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributionEnvelope"
+
+  /approvals:
+    get:
+      operationId: getApprovals
+      tags: [approvals]
+      summary: Зөвшөөрөл хүлээж буй саналууд
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, expired, all]
+            default: pending
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalsEnvelope"
+
+  /approvals/{approvalId}/approve:
+    post:
+      operationId: postApprovalsByApprovalIdApprove
+      tags: [approvals]
+      summary: Хүлээгдэж буй саналыг зөвшөөрөх
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version]
+              properties:
+                expected_version:
+                  type: integer
+                  description: |
+                    Optimistic lock. `GET /approvals`-аас авсан `version`.
+                    Зөрвөл 409 — TTL дуусаад `expired` болсон мөрийг
+                    зөвшөөрөх боломжгүй (AC-6).
+                note:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "202":
+          description: Зөвшөөрөгдөв, Execution-д дамжив
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderAccepted"
+        "409":
+          description: Мөр аль хэдийн шийдэгдсэн / `expired` / версийн зөрүү
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /approvals/{approvalId}/reject:
+    post:
+      operationId: postApprovalsByApprovalIdReject
+      tags: [approvals]
+      summary: Хүлээгдэж буй саналыг татгалзах (буцаах боломжгүй)
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version, reason]
+              properties:
+                expected_version:
+                  type: integer
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+      responses:
+        "200":
+          description: Татгалзав. Энэ санал ХЭЗЭЭ Ч илгээгдэхгүй.
+        "409":
+          description: Мөр аль хэдийн шийдэгдсэн эсвэл версийн зөрүү
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /agent-decisions:
+    get:
+      operationId: getAgentDecisions
+      tags: [agents]
+      summary: Agent-ийн шийдвэрийн лог (шүүлттэй)
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+            enum: [research, auto_tuning]
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: outcome
+          in: query
+          schema:
+            $ref: "#/components/schemas/RiskDecision"
+        - name: provider
+          in: query
+          schema:
+            type: string
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDecisionsEnvelope"
+
+  /agent-decisions/{decisionId}:
+    get:
+      operationId: getAgentDecisionsByDecisionId
+      tags: [agents]
+      summary: Нэг шийдвэр — ТҮҮХИЙ tool call payload-той хамт (AC-7, AC-8)
+      description: |
+        `tool_calls[].request` / `.response` нь Alpaca-аас ирсэн байдлаараа,
+        redaction-аас өөр ямар ч засваргүй. Энэ нь «AI яагаад ингэж хэлсэн
+        бэ» гэдгийн эх сурвалж — дүгнэлт биш, өгөгдөл.
+      parameters:
+        - name: decisionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDecisionDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /providers:
+    get:
+      operationId: getProviders
+      tags: [agents]
+      summary: Тохируулагдсан LLM provider-ууд ба role тус бүрийн идэвхтэй нь
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvidersEnvelope"
+
+  /providers/{role}/switch:
+    post:
+      operationId: postProvidersByRoleSwitch
+      tags: [agents]
+      summary: Role-ийн provider-ыг ажиллаж байхад нь солих (FR-8, AC-10)
+      description: |
+        Restart БАЙХГҮЙ. Нислэг дунд байгаа tool call-ууд хуучин provider-оор
+        дуусч, ХУУЧНААР нь бүртгэгдэнэ; солилтоос ХОЙШ эхэлсэн session нь
+        шинэ provider-т онооно. v1-д `role` = `research` л боломжтой
+        (спек A-3: бусад agent LLM биш).
+      parameters:
+        - name: role
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [research]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id]
+              properties:
+                provider_id:
+                  type: string
+                  description: "`GET /providers`-ийн `id` (жишээ: `claude-mcp`, `openai-fc`)"
+      responses:
+        "200":
+          description: Солигдов
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSwitchResult"
+        "422":
+          description: Тохируулагдаагүй эсвэл эрүүл мэндийн шалгалт унасан provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /tuning/parameters:
+    get:
+      operationId: getTuningParameters
+      tags: [tuning]
+      summary: Whitelist параметр, тэдгээрийн муж, одоогийн утга, түүх
+      description: |
+        Энэ API-д whitelist эсвэл bounds-ыг ӨӨРЧЛӨХ endpoint ЗОРИУДААР
+        БАЙХГҮЙ (T-26, AC-24). Муж нь config-оос — deploy-ээр л солигдоно.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TuningEnvelope"
+
+  /tuning/promote:
+    post:
+      operationId: postTuningPromote
+      tags: [tuning]
+      summary: Paper-т шалгагдсан параметрийн багцыг live рүү дэвшүүлэх (AC-23)
+      description: Хоёр шаттай баталгаажуулалт заавал (409 → `confirmation_token`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tuning_history_ids]
+              properties:
+                tuning_history_ids:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    format: uuid
+                confirmation_token:
+                  type: string
+      responses:
+        "200":
+          description: Дэвшүүлэв. `tuning_history`-д `approved_by=operator`.
+        "409":
+          description: Баталгаажуулалт шаардлагатай, эсвэл walk-forward нотолгоо дутуу
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /system/state:
+    get:
+      operationId: getSystemState
+      tags: [system]
+      summary: Арилжааны төлөвийн машины одоогийн байдал (FR-13)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStateEnvelope"
+
+  /kill-switch:
+    post:
+      operationId: postKillSwitch
+      tags: [system]
+      summary: ЗОГСОО — шинэ order илгээхийг ТЭР ДОР НЬ зогсоох (FR-7, AC-14)
+      description: |
+        Төлөв → `halted`, 1 секунд дотор. Байгаа позицыг АВТОМАТААР ХААХГҮЙ
+        (спек A-2). Идемпотент: аль хэдийн `halted` бол 200 буцаана.
+        Энэ дуудалт баталгаажуулалт ШААРДАХГҮЙ — яаралтай хаалтын замд
+        саад тавихгүй.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        "200":
+          description: Зогссон
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStateEnvelope"
+              example:
+                source: alpaca_paper
+                as_of: "2026-09-16T14:31:00Z"
+                stale: false
+                system_state: halted
+                state: halted
+                reason: "Operator kill switch"
+                changed_at: "2026-09-16T14:31:00Z"
+                changed_by: operator
+                wind_down_deadline: null
+                seconds_remaining: null
+                breaker_metrics: []
+
+  /system/wind-down:
+    post:
+      operationId: postSystemWindDown
+      tags: [system]
+      summary: УНТРААХ БЭЛТГЭЛ — эхлээд хаах цонх, дараа нь зогсох (FR-13, AC-34)
+      description: |
+        Төлөв → `winding_down`, 1 секунд дотор, `system` WS сувгаар түгээнэ.
+        `wind_down_deadline = now + WIND_DOWN_GRACE` (хуанлийн цагаар).
+        Grace дуусахад автоматаар `halted` (AC-36).
+
+        Энэ үед: эрсдэл нэмэгдүүлэх бүх order татгалзана; хаах / багасгах
+        order дамжина. Позиц АВТОМАТААР хаагдахгүй (спек A-7) — agent ба
+        operator-т хаах БОЛОМЖ өгч байгаа, албадан зарахгүй.
+      responses:
+        "200":
+          description: Wind-down эхлэв
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStateEnvelope"
+              example:
+                source: alpaca_paper
+                as_of: "2026-09-16T14:30:00Z"
+                stale: false
+                system_state: winding_down
+                state: winding_down
+                reason: "Operator: машинаа унтраах гэж байна"
+                changed_at: "2026-09-16T14:30:00Z"
+                changed_by: operator
+                wind_down_deadline: "2026-09-16T14:45:00Z"
+                seconds_remaining: 900
+                breaker_metrics: []
+        "409":
+          description: Аль хэдийн `halted` — wind-down утгагүй
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /system/activate:
+    post:
+      operationId: postSystemActivate
+      tags: [system]
+      summary: ИДЭВХЖҮҮЛ — `ACTIVE` руу буцах ЦОРЫН ГАНЦ зам (AC-37)
+      description: |
+        Хоёр шаттай баталгаажуулалт ЗААВАЛ. Түүнчлэн backend нь circuit
+        breaker-ийн бүх метрикийг ДАХИН ҮНЭЛНЭ — аль нэг нь босгоосоо дээр
+        хэвээр бол 409, аль метрик болохыг нэрлэж буцаана. Энэ нь
+        «цэвэрлэсэн» гэсэн туг БИШ, БОДИТ хэмжилт — тугийг гараар асаах
+        замаар тойрох боломжгүй.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirmation_token:
+                  type: string
+                note:
+                  type: string
+                  maxLength: 500
+      responses:
+        "200":
+          description: Идэвхжив
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStateEnvelope"
+        "409":
+          description: |
+            `confirmation_required` — token дутуу; эсвэл
+            `breaker_still_tripped` — метрик нэрлэгдэнэ; эсвэл
+            `already_active`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+components:
+
+  securitySchemes:
+    operatorSession:
+      type: apiKey
+      in: cookie
+      name: session
+      description: |
+        Ганц operator-ийн session cookie (HttpOnly, Secure, SameSite=Strict).
+        Олон хэрэглэгчийн role model v1-д БАЙХГҮЙ (спек A-6).
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: |
+        Клиент үүсгэнэ. Энэ утга нь `client_order_id`-ийн үндэс болно.
+        Ижил key + ижил бие = ижил хариу, давхар order БАЙХГҮЙ.
+        Ижил key + өөр бие = 409 `idempotency_conflict`.
+
+  responses:
+    NotFound:
+      description: Олдсонгүй
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    BrokerUnavailable:
+      description: |
+        Alpaca хүрэхгүй байна. Систем таамаглахгүй — хуучин утгыг live мэт
+        буцаахгүй. Frontend үүнийг «stale» banner болгоно.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+
+    Money:
+      type: string
+      pattern: '^-?[0-9]+\.[0-9]{2}$'
+      description: Fixed-point decimal тэмдэгт мөр. Float ХЭЗЭЭ Ч биш (AC-25).
+      examples: ["10234.56", "-42.00"]
+
+    Quantity:
+      type: string
+      pattern: '^-?[0-9]+(\.[0-9]{1,9})?$'
+      description: Ширхэг. Crypto-д бутархай байж болох тул decimal тэмдэгт мөр.
+
+    Utc:
+      type: string
+      format: date-time
+      pattern: 'Z$'
+      description: RFC 3339, ЗААВАЛ UTC (`Z`). Локал бүс хориотой (AC-26).
+
+    Source:
+      type: string
+      enum: [alpaca_live, alpaca_paper, backtest]
+      description: |
+        Энэ хариун дахь БҮХ өгөгдлийн гарал. Нэг хариу дотор холимог утга
+        БАЙХГҮЙ — холих шаардлагатай бол тусдаа хүсэлт (AC-20, AC-21).
+
+    SystemState:
+      type: string
+      enum: [active, winding_down, halted]
+
+    Origin:
+      type: string
+      enum: [research_agent, auto_tuning, manual_operator, external]
+      description: |
+        Order / позицийн гарал үүсэл (AC-29). `external` = локал `orders`-д
+        таарах бичлэг ОЛДООГҮЙ (Alpaca UI-аас нээсэн г.м.). ХЭЗЭЭ Ч
+        таамаглахгүй — таарахгүй бол `external`.
+
+    RiskDecision:
+      type: string
+      enum: [APPROVE, REJECT, ESCALATE_TO_HUMAN]
+
+    OrderSide:
+      type: string
+      enum: [buy, sell]
+
+    OrderType:
+      type: string
+      enum: [market, limit, stop, stop_limit, bracket]
+
+    TimeInForce:
+      type: string
+      enum: [day, gtc, ioc, fok]
+
+    Envelope:
+      type: object
+      required: [source, as_of, stale, system_state]
+      properties:
+        source:
+          $ref: "#/components/schemas/Source"
+        as_of:
+          $ref: "#/components/schemas/Utc"
+        stale:
+          type: boolean
+          default: false
+          description: |
+            Өгөгдөл `STALE_AFTER_SECONDS`-оос хуучин. Талбарыг ОРХИХГҮЙ —
+            ил `false` бичнэ (хавсралт 10 §2.4: «байхгүй» нь таамаглах цонх).
+        system_state:
+          $ref: "#/components/schemas/SystemState"
+
+    Health:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          status: ok
+          broker:
+            name: alpaca_paper
+            reachable: true
+            last_ok_at: "2026-09-16T14:29:58Z"
+          database:
+            name: postgres
+            reachable: true
+            last_ok_at: "2026-09-16T14:29:59Z"
+          redis:
+            name: redis
+            reachable: true
+            last_ok_at: "2026-09-16T14:29:59Z"
+          providers:
+            - name: claude-mcp
+              reachable: true
+              last_ok_at: "2026-09-16T14:28:11Z"
+            - name: gpt-fc
+              reachable: true
+              last_ok_at: "2026-09-16T14:27:40Z"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [status, broker, database, redis, providers]
+          properties:
+            status:
+              type: string
+              enum: [ok, degraded, down]
+            broker:
+              $ref: "#/components/schemas/Dependency"
+            database:
+              $ref: "#/components/schemas/Dependency"
+            redis:
+              $ref: "#/components/schemas/Dependency"
+            providers:
+              type: array
+              items:
+                $ref: "#/components/schemas/Dependency"
+
+    Dependency:
+      type: object
+      required: [name, reachable]
+      properties:
+        name:
+          type: string
+        reachable:
+          type: boolean
+        last_ok_at:
+          $ref: "#/components/schemas/Utc"
+        detail:
+          type: string
+
+    Account:
+      type: object
+      required: [account_id, equity, cash, buying_power, pattern_day_trader, day_trade_count]
+      properties:
+        account_id:
+          type: string
+        equity:
+          $ref: "#/components/schemas/Money"
+        cash:
+          $ref: "#/components/schemas/Money"
+        buying_power:
+          $ref: "#/components/schemas/Money"
+        last_equity:
+          $ref: "#/components/schemas/Money"
+        pattern_day_trader:
+          type: boolean
+        day_trade_count:
+          type: integer
+        trading_blocked:
+          type: boolean
+
+    AccountEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          account:
+            account_id: PA3X9QK2TLZ0
+            equity: "104238.17"
+            cash: "38210.55"
+            buying_power: "76421.10"
+            last_equity: "103980.44"
+            pattern_day_trader: false
+            day_trade_count: 1
+            trading_blocked: false
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [account]
+          properties:
+            account:
+              $ref: "#/components/schemas/Account"
+
+    Quote:
+      type: object
+      required: [symbol, bid, ask, last, quote_ts]
+      properties:
+        symbol:
+          type: string
+        bid:
+          $ref: "#/components/schemas/Money"
+        ask:
+          $ref: "#/components/schemas/Money"
+        last:
+          $ref: "#/components/schemas/Money"
+        quote_ts:
+          $ref: "#/components/schemas/Utc"
+
+    QuoteEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          quote:
+            symbol: AAPL
+            bid: "221.48"
+            ask: "221.52"
+            last: "221.50"
+            quote_ts: "2026-09-16T14:29:58Z"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [quote]
+          properties:
+            quote:
+              $ref: "#/components/schemas/Quote"
+
+    Position:
+      type: object
+      required:
+        [symbol, qty, side, avg_entry_price, market_value, unrealized_pl, origin, origin_mixed]
+      properties:
+        symbol:
+          type: string
+        qty:
+          $ref: "#/components/schemas/Quantity"
+        side:
+          type: string
+          enum: [long, short]
+        avg_entry_price:
+          $ref: "#/components/schemas/Money"
+        market_value:
+          $ref: "#/components/schemas/Money"
+        unrealized_pl:
+          $ref: "#/components/schemas/Money"
+        origin:
+          $ref: "#/components/schemas/Origin"
+        origin_detail:
+          type: [string, "null"]
+          description: >-
+            `research_agent` үед provider/model; `manual_operator` үед actor;
+            `external` үед `null`.
+        origin_mixed:
+          type: boolean
+          description: >-
+            Энэ symbol дээр НЭГЭЭС ОЛОН origin fill хийсэн (LLD §11.1). `origin`
+            нь сүүлийн fill-ийнх — бүтэн задаргаа БИШ. UI үүнийг ил тэмдэглэнэ,
+            далдлахгүй (LLD §16.4).
+
+    PositionsEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          positions:
+            - symbol: AAPL
+              qty: "40"
+              side: long
+              avg_entry_price: "221.40"
+              market_value: "9012.00"
+              unrealized_pl: "156.00"
+              origin: research_agent
+              origin_detail: claude-mcp/claude-opus-5
+              origin_mixed: false
+            - symbol: MSFT
+              qty: "12"
+              side: long
+              avg_entry_price: "402.10"
+              market_value: "4870.80"
+              unrealized_pl: "-54.40"
+              origin: manual_operator
+              origin_detail: operator
+              origin_mixed: true
+            - symbol: TSLA
+              qty: "5"
+              side: long
+              avg_entry_price: "248.90"
+              market_value: "1252.50"
+              unrealized_pl: "8.00"
+              origin: external
+              origin_detail: null
+              origin_mixed: false
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [positions]
+          properties:
+            positions:
+              type: array
+              items:
+                $ref: "#/components/schemas/Position"
+
+    Order:
+      type: object
+      required: [id, client_order_id, symbol, side, qty, order_type, status, origin, submitted_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Локал ID
+        broker_order_id:
+          type: [string, "null"]
+          description: Alpaca-ийн ID; илгээгдэх хүртэл `null`
+        client_order_id:
+          type: string
+          description: Idempotency түлхүүрээс гаргасан детерминистик ID
+        symbol:
+          type: string
+        side:
+          $ref: "#/components/schemas/OrderSide"
+        qty:
+          $ref: "#/components/schemas/Quantity"
+        filled_qty:
+          $ref: "#/components/schemas/Quantity"
+        order_type:
+          $ref: "#/components/schemas/OrderType"
+        limit_price:
+          $ref: "#/components/schemas/Money"
+        stop_price:
+          $ref: "#/components/schemas/Money"
+        time_in_force:
+          $ref: "#/components/schemas/TimeInForce"
+        status:
+          type: string
+          enum: [pending_risk, pending_approval, rejected, accepted, partially_filled, filled, canceled, expired, failed]
+        origin:
+          $ref: "#/components/schemas/Origin"
+        origin_detail:
+          type: [string, "null"]
+        decision_id:
+          type: [string, "null"]
+          format: uuid
+          description: Холбогдох `agent_decisions` мөр
+        submitted_at:
+          $ref: "#/components/schemas/Utc"
+        filled_at:
+          oneOf:
+            - $ref: "#/components/schemas/Utc"
+            - type: "null"
+          description: Биелэх хүртэл `null`
+
+    OrdersEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          orders:
+            - id: 6f1b5a2c-0d4e-4f31-9b77-1a2c3d4e5f60
+              broker_order_id: 0b6c9a51-4e2f-4a1d-9f0c-7d8e9f0a1b2c
+              client_order_id: p3-6f1b5a2c
+              symbol: AAPL
+              side: buy
+              qty: "10"
+              filled_qty: "10"
+              order_type: limit
+              limit_price: "221.50"
+              time_in_force: day
+              status: filled
+              origin: research_agent
+              origin_detail: claude-mcp/claude-opus-5
+              decision_id: 3c9d8e7f-6a5b-4c3d-8e1f-0a9b8c7d6e5f
+              submitted_at: "2026-09-16T13:55:02Z"
+              filled_at: "2026-09-16T13:55:04Z"
+            - id: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+              broker_order_id: null
+              client_order_id: p3-9a8b7c6d
+              symbol: MSFT
+              side: sell
+              qty: "12"
+              filled_qty: "0"
+              order_type: market
+              time_in_force: day
+              status: pending_risk
+              origin: manual_operator
+              origin_detail: operator
+              decision_id: null
+              submitted_at: "2026-09-16T14:29:51Z"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [orders]
+          properties:
+            orders:
+              type: array
+              items:
+                $ref: "#/components/schemas/Order"
+
+    ManualOrderRequest:
+      type: object
+      required: [symbol, side, qty, order_type, time_in_force]
+      properties:
+        symbol:
+          type: string
+          minLength: 1
+        side:
+          $ref: "#/components/schemas/OrderSide"
+        qty:
+          $ref: "#/components/schemas/Quantity"
+        order_type:
+          $ref: "#/components/schemas/OrderType"
+        time_in_force:
+          $ref: "#/components/schemas/TimeInForce"
+        limit_price:
+          $ref: "#/components/schemas/Money"
+        stop_price:
+          $ref: "#/components/schemas/Money"
+        confirmation_token:
+          type: string
+          description: |
+            Зөвхөн өмнөх 409 `confirmation_required` хариунаас авсан утга.
+            `grounded_in` / `rationale` ЭНД БАЙХГҮЙ — гарын order нь agent-ийн
+            санал БИШ, grounding checker хамаарахгүй (AC-32).
+
+    OrderAccepted:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          order:
+            id: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+            broker_order_id: null
+            client_order_id: p3-9a8b7c6d
+            symbol: MSFT
+            side: sell
+            qty: "12"
+            filled_qty: "0"
+            order_type: market
+            time_in_force: day
+            status: accepted
+            origin: manual_operator
+            origin_detail: operator
+            decision_id: null
+            submitted_at: "2026-09-16T14:29:51Z"
+          risk:
+            decision: APPROVE
+            reason: null
+            evaluated_at: "2026-09-16T14:29:51Z"
+            checks:
+              - rule: system_state
+                passed: true
+                limit_name: SYSTEM_STATE
+                limit_value: active
+                actual_value: active
+              - rule: order_notional
+                passed: true
+                limit_name: MAX_ORDER_NOTIONAL
+                limit_value: "5000.00"
+                actual_value: "4870.80"
+              - rule: wind_down_direction
+                passed: true
+                detail: "Позиц хаах чиглэл — winding_down үед ч зөвшөөрөгдөнө"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [order, risk]
+          properties:
+            order:
+              $ref: "#/components/schemas/Order"
+            risk:
+              $ref: "#/components/schemas/RiskEvaluation"
+
+    RiskEvaluation:
+      type: object
+      required: [decision, checks, evaluated_at]
+      properties:
+        decision:
+          $ref: "#/components/schemas/RiskDecision"
+        reason:
+          type: [string, "null"]
+        evaluated_at:
+          $ref: "#/components/schemas/Utc"
+        checks:
+          type: array
+          description: >-
+            Шалгалт бүрийн үр дүн — юу унасныг, ямар хязгаартай харьцуулснаар
+            нь ил харуулна.
+          items:
+            type: object
+            required: [rule, passed]
+            properties:
+              rule:
+                type: string
+                enum:
+                  - system_state
+                  - restricted_symbol
+                  - position_pct
+                  - total_exposure_pct
+                  - daily_loss_limit
+                  - pdt_day_trades
+                  - order_notional
+                  - price_sanity
+                  - wind_down_direction
+              passed:
+                type: boolean
+              limit_name:
+                type: string
+                description: "config-ийн нэр, жишээ: `MAX_POSITION_PCT`"
+              limit_value:
+                type: string
+              actual_value:
+                type: string
+              detail:
+                type: string
+
+    Approval:
+      type: object
+      required: [id, version, state, decision_id, proposed_order, risk, created_at, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        state:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        decision_id:
+          type: string
+          format: uuid
+        proposed_order:
+          $ref: "#/components/schemas/ProposedOrder"
+        risk:
+          $ref: "#/components/schemas/RiskEvaluation"
+        created_at:
+          $ref: "#/components/schemas/Utc"
+        expires_at:
+          allOf:
+            - $ref: "#/components/schemas/Utc"
+          description: "`created_at + APPROVAL_TTL`. Дараа нь автоматаар `expired` (AC-6)."
+        resolved_at:
+          oneOf:
+            - $ref: "#/components/schemas/Utc"
+            - type: "null"
+          description: Шийдэгдэх хүртэл `null`
+        resolution_reason:
+          type: [string, "null"]
+
+    ProposedOrder:
+      type: object
+      required: [symbol, side, qty, order_type, rationale, grounded_in, provider, model]
+      properties:
+        symbol:
+          type: string
+        side:
+          $ref: "#/components/schemas/OrderSide"
+        qty:
+          $ref: "#/components/schemas/Quantity"
+        order_type:
+          $ref: "#/components/schemas/OrderType"
+        limit_price:
+          $ref: "#/components/schemas/Money"
+        stop_price:
+          $ref: "#/components/schemas/Money"
+        estimated_notional:
+          $ref: "#/components/schemas/Money"
+        rationale:
+          type: string
+        grounded_in:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uuid
+            description: "`tool_calls.id`"
+        provider:
+          type: string
+        model:
+          type: string
+
+    ApprovalsEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          approvals:
+            - id: 2d3e4f50-6172-4839-a0b1-c2d3e4f50617
+              version: 1
+              state: pending
+              decision_id: 3c9d8e7f-6a5b-4c3d-8e1f-0a9b8c7d6e5f
+              proposed_order:
+                symbol: NVDA
+                side: buy
+                qty: "25"
+                order_type: limit
+                limit_price: "402.00"
+                estimated_notional: "10050.00"
+                rationale: >-
+                  20/50 EMA огтлолцол + өмнөх 3 өдрийн дундажаас 1.8 дахин их
+                  эзлэхүүн. Эх өгөгдөл нь доорх tool call-уудад бүрэн байна.
+                grounded_in:
+                  - 11111111-2222-4333-8444-555555555555
+                  - 66666666-7777-4888-8999-aaaaaaaaaaaa
+                provider: claude-mcp
+                model: claude-opus-5
+              risk:
+                decision: ESCALATE_TO_HUMAN
+                reason: "Notional 10050.00 > MAX_ORDER_NOTIONAL 5000.00"
+                evaluated_at: "2026-09-16T14:22:10Z"
+                checks:
+                  - rule: order_notional
+                    passed: false
+                    limit_name: MAX_ORDER_NOTIONAL
+                    limit_value: "5000.00"
+                    actual_value: "10050.00"
+                  - rule: position_pct
+                    passed: true
+                    limit_name: MAX_POSITION_PCT
+                    limit_value: "10"
+                    actual_value: "9.6"
+              created_at: "2026-09-16T14:22:10Z"
+              expires_at: "2026-09-16T14:37:10Z"
+              resolved_at: null
+              resolution_reason: null
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [approvals]
+          properties:
+            approvals:
+              type: array
+              items:
+                $ref: "#/components/schemas/Approval"
+
+    AttributionEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          groups:
+            - origin: research_agent
+              origin_detail: claude-mcp/claude-opus-5
+              symbols:
+                - symbol: AAPL
+                  has_open_position: true
+                  position_qty: "40"
+                  market_value: "9012.00"
+                  open_order_count: 0
+                  origin_mixed: false
+                  last_decision_at: "2026-09-16T13:55:02Z"
+                  last_decision_id: 3c9d8e7f-6a5b-4c3d-8e1f-0a9b8c7d6e5f
+            - origin: manual_operator
+              origin_detail: operator
+              symbols:
+                - symbol: MSFT
+                  has_open_position: true
+                  position_qty: "12"
+                  market_value: "4870.80"
+                  open_order_count: 1
+                  origin_mixed: true
+                  last_decision_at: null
+                  last_decision_id: null
+            - origin: external
+              origin_detail: null
+              symbols:
+                - symbol: TSLA
+                  has_open_position: true
+                  position_qty: "5"
+                  market_value: "1252.50"
+                  open_order_count: 0
+                  origin_mixed: false
+                  last_decision_at: null
+                  last_decision_id: null
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [groups]
+          properties:
+            groups:
+              type: array
+              description: Origin тус бүрээр нэг бүлэг. Мөргүй origin бүлэг үүсгэхгүй.
+              items:
+                type: object
+                required: [origin, symbols]
+                properties:
+                  origin:
+                    $ref: "#/components/schemas/Origin"
+                  origin_detail:
+                    type: [string, "null"]
+                  symbols:
+                    type: array
+                    items:
+                      type: object
+                      required: [symbol, has_open_position, open_order_count, origin_mixed]
+                      properties:
+                        symbol:
+                          type: string
+                        has_open_position:
+                          type: boolean
+                        position_qty:
+                          $ref: "#/components/schemas/Quantity"
+                        market_value:
+                          $ref: "#/components/schemas/Money"
+                        open_order_count:
+                          type: integer
+                        origin_mixed:
+                          type: boolean
+                          description: >-
+                            Symbol нь олон origin-той (LLD §11.1). Ийм symbol
+                            холбогдох БҮХ бүлэгт давхар гарна — далдлахгүй
+                            (LLD §16.4). Нийлбэр гаргахдаа давхардлыг тооцно.
+                        last_decision_at:
+                          type: [string, "null"]
+                          format: date-time
+                        last_decision_id:
+                          type: [string, "null"]
+                          format: uuid
+
+    AgentDecision:
+      type: object
+      required: [id, agent, provider, model, created_at, proposal, risk, outcome]
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent:
+          type: string
+          enum: [research, auto_tuning]
+        provider:
+          type: string
+        model:
+          type: string
+        created_at:
+          $ref: "#/components/schemas/Utc"
+        proposal:
+          $ref: "#/components/schemas/ProposedOrder"
+        risk:
+          $ref: "#/components/schemas/RiskEvaluation"
+        grounding:
+          type: object
+          required: [passed]
+          properties:
+            passed:
+              type: boolean
+            not_run:
+              type: boolean
+              description: >-
+                Шалгагч ОГТ ажиллаагүй (жишээ нь `halted` үед санал эрт
+                татгалзсан). Ийм үед `passed: false` нь «унасан» биш
+                «шалгагдаагүй» гэсэн утгатай — UI хоёрыг ялгаж харуулна.
+            checked_claims:
+              type: integer
+              description: Шалгагдсан тоон мэдэгдлийн тоо.
+            unverified_claims:
+              type: array
+              items:
+                type: string
+              description: Цитат tool call-ийн payload-д ОЛДООГҮЙ тоон мэдэгдлүүд.
+        outcome:
+          type: string
+          enum: [grounding_failed, risk_rejected, awaiting_approval, approved, executed, order_failed]
+        order_id:
+          type: [string, "null"]
+          format: uuid
+
+    AgentDecisionsEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          decisions:
+            - id: 3c9d8e7f-6a5b-4c3d-8e1f-0a9b8c7d6e5f
+              agent: research
+              provider: claude-mcp
+              model: claude-opus-5
+              created_at: "2026-09-16T13:54:58Z"
+              proposal:
+                symbol: AAPL
+                side: buy
+                qty: "10"
+                order_type: limit
+                limit_price: "221.50"
+                estimated_notional: "2215.00"
+                rationale: "Эзлэхүүнээр батлагдсан EMA огтлолцол"
+                grounded_in:
+                  - 11111111-2222-4333-8444-555555555555
+                provider: claude-mcp
+                model: claude-opus-5
+              risk:
+                decision: APPROVE
+                reason: null
+                evaluated_at: "2026-09-16T13:55:00Z"
+                checks:
+                  - rule: order_notional
+                    passed: true
+                    limit_name: MAX_ORDER_NOTIONAL
+                    limit_value: "5000.00"
+                    actual_value: "2215.00"
+              grounding:
+                passed: true
+                unverified_claims: []
+              outcome: executed
+              order_id: 6f1b5a2c-0d4e-4f31-9b77-1a2c3d4e5f60
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [decisions]
+          properties:
+            decisions:
+              type: array
+              items:
+                $ref: "#/components/schemas/AgentDecision"
+
+    AgentDecisionDetail:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [decision, tool_calls]
+          properties:
+            decision:
+              $ref: "#/components/schemas/AgentDecision"
+            tool_calls:
+              type: array
+              items:
+                type: object
+                required: [id, tool_name, request, response, source, called_at]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  tool_name:
+                    type: string
+                  request:
+                    type: object
+                    additionalProperties: true
+                  response:
+                    type: object
+                    additionalProperties: true
+                    description: Alpaca-аас ирсэн ТҮҮХИЙ хариу (зөвхөн redaction)
+                  source:
+                    $ref: "#/components/schemas/Source"
+                  called_at:
+                    $ref: "#/components/schemas/Utc"
+                  latency_ms:
+                    type: integer
+
+    ProvidersEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          providers:
+            - id: claude-mcp
+              vendor: anthropic
+              model: claude-opus-5
+              transport: mcp
+              healthy: true
+              read_only: false
+              last_error: null
+            - id: gpt-fc
+              vendor: openai
+              model: gpt-5
+              transport: function_calling
+              healthy: true
+              read_only: false
+              last_error: null
+            - id: local-fallback
+              vendor: local
+              model: llama-3.1-70b
+              transport: stdio_json
+              healthy: true
+              read_only: true
+              last_error: null
+          active:
+            research: claude-mcp
+            auto_tuning: gpt-fc
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [providers, active]
+          properties:
+            providers:
+              type: array
+              items:
+                type: object
+                required: [id, vendor, model, transport, healthy, read_only]
+                properties:
+                  id:
+                    type: string
+                    examples: ["claude-mcp"]
+                  vendor:
+                    type: string
+                    enum: [anthropic, openai, xai, opencode, local]
+                  model:
+                    type: string
+                  transport:
+                    type: string
+                    enum: [mcp, function_calling, stdio_json]
+                  healthy:
+                    type: boolean
+                  read_only:
+                    type: boolean
+                    description: |
+                      Local / fallback provider-ууд анхдагчаар `true` — тэдэнд
+                      `propose_order` НЭЭГДЭХГҮЙ (хавсралт 05 §2).
+                  last_error:
+                    type: [string, "null"]
+            active:
+              type: object
+              additionalProperties:
+                type: string
+              description: "role → provider_id (жишээ: `{\"research\": \"claude-mcp\"}`)"
+
+    ProviderSwitchResult:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [role, previous_provider_id, new_provider_id, in_flight_calls, switched_at]
+          properties:
+            role:
+              type: string
+            previous_provider_id:
+              type: string
+            new_provider_id:
+              type: string
+            in_flight_calls:
+              type: integer
+              description: >-
+                Хуучин provider-оор дуусах tool call-ийн тоо. Тэдгээр нь
+                ХУУЧНААР бүртгэгдэнэ.
+            switched_at:
+              $ref: "#/components/schemas/Utc"
+
+    TuningEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          parameters:
+            - name: STOP_LOSS_PCT
+              current_value: "2.5"
+              bounds:
+                min: "1.0"
+                max: "5.0"
+                step: "0.1"
+              applies_to: paper
+              history:
+                - id: aaaabbbb-cccc-4ddd-8eee-ffff00001111
+                  old_value: "2.4"
+                  new_value: "2.5"
+                  changed_at: "2026-09-15T21:05:00Z"
+                  approved_by: system
+                  backtest_window:
+                    start: "2026-06-01"
+                    end: "2026-09-14"
+                  walk_forward:
+                    folds: 6
+                    in_sample_metric: "sharpe=1.31"
+                    out_of_sample_metric: "sharpe=1.08"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [parameters]
+          properties:
+            parameters:
+              type: array
+              items:
+                type: object
+                required: [name, current_value, bounds, applies_to]
+                properties:
+                  name:
+                    type: string
+                  current_value:
+                    type: string
+                  bounds:
+                    type: object
+                    required: [min, max, step]
+                    properties:
+                      min:
+                        type: string
+                      max:
+                        type: string
+                      step:
+                        type: string
+                  applies_to:
+                    type: string
+                    enum: [backtest, paper, live]
+                    description: >-
+                      Анхдагчаар `paper`. `live` болох цорын ганц зам =
+                      `POST /tuning/promote`.
+                  history:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, old_value, new_value, changed_at, approved_by, walk_forward]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        old_value:
+                          type: string
+                        new_value:
+                          type: string
+                        changed_at:
+                          $ref: "#/components/schemas/Utc"
+                        approved_by:
+                          type: string
+                          enum: [system, operator]
+                        backtest_window:
+                          type: object
+                          properties:
+                            start:
+                              type: string
+                              format: date
+                            end:
+                              type: string
+                              format: date
+                        walk_forward:
+                          type: object
+                          required: [folds, in_sample_metric, out_of_sample_metric]
+                          properties:
+                            folds:
+                              type: integer
+                            in_sample_metric:
+                              type: string
+                            out_of_sample_metric:
+                              type: string
+
+    SystemStateEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          state: active
+          reason: null
+          changed_at: "2026-09-16T09:00:00Z"
+          changed_by: operator
+          wind_down_deadline: null
+          seconds_remaining: null
+          breaker_metrics:
+            - metric: daily_loss
+              value: "-312.44"
+              limit_name: MAX_DAILY_LOSS
+              limit_value: "-2000.00"
+              tripped: false
+            - metric: api_error_rate
+              value: "0.004"
+              limit_name: MAX_API_ERROR_RATE
+              limit_value: "0.05"
+              tripped: false
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [state, changed_at, changed_by]
+          properties:
+            state:
+              $ref: "#/components/schemas/SystemState"
+            reason:
+              type: [string, "null"]
+            changed_at:
+              $ref: "#/components/schemas/Utc"
+            changed_by:
+              type: string
+              enum: [operator, circuit_breaker, scheduler]
+            wind_down_deadline:
+              type: [string, "null"]
+              format: date-time
+              description: Зөвхөн `winding_down` үед. Дуусахад `halted`.
+            seconds_remaining:
+              type: [integer, "null"]
+            breaker_metrics:
+              type: array
+              description: |
+                Circuit breaker-ийн метрик бүрийн одоогийн байдал. `activate`
+                энэ жагсаалтыг ДАХИН хэмжиж шийднэ — хадгалагдсан туг биш.
+
+                Хэмжигдээгүй метрик нь `value: "unmeasured"` гэж ИЛ гарна
+                (broker хүрэхгүй, эсвэл цонхонд нэг ч үйл явдал байхгүй).
+                Хэмжигдээгүйг `0` гэж харуулахгүй.
+              items:
+                type: object
+                required: [metric, value, limit_name, limit_value, tripped]
+                properties:
+                  metric:
+                    type: string
+                    enum: [daily_loss, api_error_rate, order_reject_rate, ws_disconnects]
+                  value:
+                    type: string
+                    description: |
+                      Тоон утга эсвэл `unmeasured`. `unmeasured` үед `tripped`
+                      нь ҮРГЭЛЖ `false` — хэмжээгүй зүйл халт үүсгэхгүй.
+                  limit_name:
+                    type: string
+                  limit_value:
+                    type: string
+                  tripped:
+                    type: boolean
+
+    Problem:
+      description: RFC 9457 Problem Details.
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+          enum:
+            - confirmation_required
+            - system_halted
+            - winding_down_increase_blocked
+            - risk_rejected
+            - grounding_failed
+            - idempotency_conflict
+            - breaker_still_tripped
+            - already_active
+            - approval_expired
+            - version_conflict
+            - broker_unavailable
+            - broker_rejected
+            - provider_unavailable
+            - not_found
+            - invalid_request
+        detail:
+          type: string
+        broker_code:
+          type: string
+          description: >-
+            Зөвхөн `broker_rejected` үед. Alpaca-ийн алдааны код
+            (ж: `42210000` — wash trade). Broker ХАРИУЛСАН гэдгийн нотолгоо.
+        errors:
+          type: array
+          description: Зөвхөн `invalid_request` үед. Унасан талбар тус бүр.
+          items:
+            type: object
+            required: [loc, msg]
+            properties:
+              loc:
+                type: string
+              msg:
+                type: string
+        risk:
+          $ref: "#/components/schemas/RiskEvaluation"
+        confirmation:
+          type: object
+          description: >-
+            Зөвхөн `confirmation_required` үед. Хоёр шаттай баталгаажуулалтын
+            сорилт.
+          required: [token, prompt, expires_at]
+          properties:
+            token:
+              type: string
+            prompt:
+              type: string
+              description: |
+                Operator-т харуулах тодорхой текст. Үйлдэл тус бүрд ӨӨР —
+                хоёр товчийг андуурахаас сэргийлнэ (AC-38).
+            expires_at:
+              $ref: "#/components/schemas/Utc"
+        breaker_metrics:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+

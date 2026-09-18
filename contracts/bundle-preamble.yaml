@@ -1,0 +1,20 @@
+# PERSONAL-3 · contracts · CONTRACT_PUBLISH · 2026-09-16
+#
+# ⚠ ҮҮСГЭСЭН ФАЙЛ — гараар засахгүй. Эх сурвалж нь `contracts/` хавтас:
+#   contracts/openapi.yaml · contracts/asyncapi.yaml ·
+#   contracts/tool-contract.v1.yaml · contracts/bundle-preamble.yaml
+# Дахин угсрах: `cd contracts && npm run bundle` (шалгах: `npm run check:bundle`).
+#
+# Энэ файл нь ГУРВАН YAML баримтыг нэг файлд агуулна (`---`-аар тусгаарлагдсан):
+#   1) OpenAPI 3.1  — backend REST API (frontend-facing)
+#   2) AsyncAPI 3.0 — WebSocket сувгууд (frontend-facing)
+#   3) Tool Contract v1 — Agent Gateway ↔ ямар ч LLM provider (JSON Schema)
+#
+# Нийтлэгдсэн хувилбар: v1.0.0 (царцаасан). Дуурайлт: `cd contracts &&
+# npm run mock` → http://127.0.0.1:4010. Баримт: `npm run docs` →
+# contracts/site/index.html. Хувилбарын бодлого: contracts/README.md.
+#
+# ЭНЭ ГЭРЭЭ НЬ ХАТУУ — backend, frontend, Agent Gateway гурав энэ файлаас
+# зэрэг хөгжинө. Өөрчлөлт нь semver-ээр явна (`info.version` ба Tool
+# Contract-ийн `contract_version`).
+

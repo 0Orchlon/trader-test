@@ -1,0 +1,84 @@
+# PERSONAL-3 · дэд бүтэц + аппликейшн (Postgres + Redis + backend + frontend).
+#
+# Байршуулалт нь РЕПООС бүрэн угсрагдана: `docker compose up -d --build`.
+# Өмнө нь backend service байхгүй, frontend нь host-ийн `frontend/dist`
+# хавтаснаас mount хийгддэг байсан тул байршуулалт нь ажлын хавтас устмагц
+# унадаг (U-2), backend нь огт байршуулагдахгүй (U-4) байв.
+#
+# Порт: 8090/5181 (Hefesto) болон бусад локал төслүүдийн 15432/18080-той
+# мөргөлдөхгүйгээр сонгосон.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: p3
+      POSTGRES_PASSWORD: p3
+      POSTGRES_DB: p3
+    ports:
+      - "25432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U p3 -d p3"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "26379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Backend (FastAPI + APScheduler). Image нь Python 3.12-г өөртөө агуулна
+  # тул host-ийн Python хувилбараас хамаарахгүй (U-4).
+  #
+  # Хязгаарын утгууд (§7) анхдагчгүй: `backend/.env` байхгүй бол app ЗОРИУД
+  # эхлэхгүй (LLD §17.1, P-2). `.env.example`-ийг хуулж бөглөнө.
+  # Alpaca-ийн түлхүүр зөвхөн орчноос — репод ХЭЗЭЭ Ч орохгүй.
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      # Контейнер доторх хаяг нь `.env`-ийн localhost-ыг ДАРЖ бичнэ.
+      DATABASE_URL: postgresql+asyncpg://p3:p3@postgres:5432/p3
+      REDIS_URL: redis://redis:6379/0
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+    ports:
+      - "28000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Frontend-ийн статик + reverse proxy. Статикийг ДАНГААР нь serve хийхэд
+  # `/api/v1/*` ба deep link 404 болж UI бүхэлдээ хоосон гарч байв (UAT U-1)
+  # — тиймээс `ci/nginx.conf` нь `/api`, `/health`, `/ws`-ыг backend руу
+  # дамжуулж, бусдыг `index.html` руу унагана.
+  #
+  # Static нь image ДОТОР шатаана (U-2): host-ийн хавтаснаас mount хийхгүй.
+  # `BACKEND`-ийн анхдагч нь compose-ийн дотоод сүлжээн дэх `backend` service
+  # — өмнөх `host.docker.internal:8000` анхдагч нь host дээрх ГАДНЫ процесс
+  # руу зааж, `/api/v1/*` бүрийг чимээгүй `404` болгож байв (U-4). Host дээр
+  # ажиллаж буй uvicorn руу заах бол `BACKEND=host.docker.internal:8000`.
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "18080:80"
+    environment:
+      BACKEND: ${BACKEND:-backend:8000}
+      # nginx-ийн `$host`, `$uri` зэргийг envsubst иддэг — зөвхөн BACKEND.
+      NGINX_ENVSUBST_FILTER: BACKEND
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - backend

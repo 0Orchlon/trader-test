@@ -1,0 +1,9 @@
+# PERSONAL-3 · contracts · CONTRACT_PUBLISH · 2026-09-16
+extends:
+  - recommended
+rules:
+  # 401 нь session middleware-ийн ГЛОБАЛ хариу (`security: operatorSession`) —
+  # зам бүрт давтан бичихгүй. Домэйны 4xx-ууд (409/422/404) нь ил бичигдсэн.
+  operation-4xx-response: off
+  # `{host}` хувьсагчийн анхдагч нь `trader.internal` — жишээ домэйн биш.
+  no-server-example.com: off

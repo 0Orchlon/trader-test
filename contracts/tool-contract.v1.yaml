@@ -1,0 +1,317 @@
+# Provider-neutral. Claude (MCP), OpenAI/Grok (function calling), opencode
+# (stdio JSON), local model — бүгд ЯГ ЭНЭ схемийг л хардаг. Adapter-ийн
+# цорын ганц ажил бол энэ схемийг тухайн vendor-ийн форматад буулгах.
+contract_version: "1.0.0"
+
+invariants:
+  - id: INV-1
+    rule: >-
+      `propose_order` ба `propose_tuning_change` нь LLM-д нээлттэй ЦОРЫН ГАНЦ
+      бичих маягийн tool. Хоёул зөвхөн САНАЛ үүсгэнэ — Alpaca руу ХЭЗЭЭ Ч
+      шууд хүрэхгүй.
+  - id: INV-2
+    rule: >-
+      tool result бүрт өөрийн `tool_call_id`, `timestamp`, `source`,
+      `system_state` талбарууд ЗААВАЛ байна. Аль нэг нь дутвал Gateway нь
+      хариуг LLM-д хүргэхгүй, schema алдаа гаргана.
+  - id: INV-3
+    rule: >-
+      Мөнгө хөдөлгөх талбарт `grounded_in` / `backtest_evidence` лавлагаагүй
+      түүхий тоо ХЭЗЭЭ Ч хүлээн авахгүй.
+  - id: INV-4
+    rule: >-
+      Ямар ч provider-т API key, DB credential, эсвэл «шууд гүйцэтгэ» чадвар
+      өгөхгүй. Tool call бүр backend-ээр дамжиж, хариу буцахаас ӨМНӨ
+      `tool_calls`-д бичигдэнэ.
+  - id: INV-5
+    rule: >-
+      `read_only: true` гэж тохируулсан provider-т (local / fallback)
+      `propose_order` ба `propose_tuning_change` схемээс БҮРЭН хасагдана —
+      татгалзах биш, огт харагдахгүй.
+
+# Бүх tool result-ийг ороох дугтуй. Adapter бүр үүнийг өөрчлөлтгүй дамжуулна.
+result_envelope:
+  type: object
+  required: [tool_call_id, timestamp, source, system_state, ok]
+  properties:
+    tool_call_id:
+      type: string
+      format: uuid
+    timestamp:
+      type: string
+      format: date-time
+      description: UTC, `Z` төгсгөлтэй
+    source:
+      type: string
+      enum: [alpaca_live, alpaca_paper, backtest]
+    system_state:
+      type: object
+      required: [state, guidance]
+      description: |
+        AC-34: agent нь системийн төлөвийг СИСТЕМИЙН МЭДЭГДЛЭЭР биш,
+        ӨГӨГДЛӨӨР хүлээж авна. Тиймээс төлөв солигдсоны дараах ЭХНИЙ tool
+        result нь шинэ утгыг агуулна — agent төлөвийг мэдэлгүй үлдэх цонх
+        БАЙХГҮЙ.
+      properties:
+        state:
+          type: string
+          enum: [active, winding_down, halted]
+        seconds_remaining:
+          type: [integer, "null"]
+        reason:
+          type: [string, "null"]
+        guidance:
+          type: string
+          description: |
+            LLM-д зориулсан тодорхой заавар. Жишээ (`winding_down`):
+            "Positions may only be reduced or closed. Any proposal that
+            increases exposure will be rejected."
+    ok:
+      type: boolean
+    error:
+      type: [object, "null"]
+      description: |
+        Алдаа нь ИЛ. `no_data`, `stale`, `unreachable` — талбар орхих замаар
+        ХЭЗЭЭ Ч илэрхийлэхгүй (хавсралт 10 §2.4).
+      properties:
+        code:
+          type: string
+          enum: [no_data, stale, unreachable, invalid_symbol, rate_limited]
+        message:
+          type: string
+    data:
+      type: [object, "null"]
+
+tools:
+
+  - name: get_account
+    access: read
+    description: >-
+      Return the current Alpaca account snapshot. Always live data from the
+      broker, never estimated or cached beyond STALE_AFTER_SECONDS.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [equity, cash, buying_power, day_trade_count, pattern_day_trader]
+      properties:
+        equity:
+          type: string
+        cash:
+          type: string
+        buying_power:
+          type: string
+        day_trade_count:
+          type: integer
+        pattern_day_trader:
+          type: boolean
+
+  - name: get_positions
+    access: read
+    description: Return current open positions with their origin attribution.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [positions]
+      properties:
+        positions:
+          type: array
+          items:
+            type: object
+            required: [symbol, qty, side, avg_entry_price, market_value, origin]
+            properties:
+              symbol:
+                type: string
+              qty:
+                type: string
+              side:
+                type: string
+                enum: [long, short]
+              avg_entry_price:
+                type: string
+              market_value:
+                type: string
+              origin:
+                type: string
+                enum: [research_agent, auto_tuning, manual_operator, external]
+
+  - name: get_quote
+    access: read
+    description: >-
+      Return the latest quote for a symbol. If the quote is older than
+      STALE_AFTER_SECONDS the envelope returns error.code = "stale"; if the
+      symbol is unknown or delisted it returns error.code = "invalid_symbol".
+      It NEVER returns a guessed or interpolated price.
+    input_schema:
+      type: object
+      required: [symbol]
+      properties:
+        symbol:
+          type: string
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [symbol, bid, ask, last, quote_ts]
+      properties:
+        symbol:
+          type: string
+        bid:
+          type: string
+        ask:
+          type: string
+        last:
+          type: string
+        quote_ts:
+          type: string
+          format: date-time
+
+  - name: get_bars
+    access: read
+    description: >-
+      Return historical OHLCV bars from Alpaca market data. Returns only bars
+      that actually exist; a range with no data returns error.code = "no_data"
+      and an EMPTY array, never synthesized bars.
+    input_schema:
+      type: object
+      required: [symbol, timeframe, start, end]
+      properties:
+        symbol:
+          type: string
+        timeframe:
+          type: string
+          enum: ["1Min", "5Min", "15Min", "1Hour", "1Day"]
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 10000
+      additionalProperties: false
+
+  - name: get_backtest_result
+    access: read
+    description: >-
+      Run or fetch a cached backtest over historical bars. The envelope's
+      source is always "backtest" — this data must never be described as live.
+    input_schema:
+      type: object
+      required: [strategy_id, start, end, params]
+      properties:
+        strategy_id:
+          type: string
+        start:
+          type: string
+          format: date
+        end:
+          type: string
+          format: date
+        params:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+
+  - name: get_tuning_bounds
+    access: read
+    description: >-
+      Return the whitelist of auto-tunable parameters and their approved
+      numeric bounds. A value outside these bounds can never be proposed.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+
+  - name: propose_order
+    access: propose
+    description: >-
+      Propose a trade for Risk Agent evaluation. THIS DOES NOT PLACE AN ORDER.
+      Every numeric claim in `rationale` must also appear in the response
+      payload of at least one tool call listed in `grounded_in`, or the
+      proposal is rejected before the Risk Agent ever sees it.
+      When system_state is "winding_down", only proposals that reduce or close
+      an existing position are accepted; anything that increases exposure is
+      rejected. When system_state is "halted", every proposal is rejected.
+    input_schema:
+      type: object
+      required: [symbol, side, qty, order_type, rationale, grounded_in]
+      properties:
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [buy, sell]
+        qty:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,9})?$'
+        order_type:
+          type: string
+          enum: [market, limit, stop, stop_limit, bracket]
+        limit_price:
+          type: string
+        stop_price:
+          type: string
+        time_in_force:
+          type: string
+          enum: [day, gtc, ioc, fok]
+        rationale:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        grounded_in:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uuid
+          description: tool_call_id-ууд. Хоосон массив ХҮЛЭЭН АВАХГҮЙ.
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [decision_id, accepted, stage]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        accepted:
+          type: boolean
+        stage:
+          type: string
+          enum: [grounding_failed, risk_rejected, awaiting_approval, approved_for_execution]
+        reason:
+          type: [string, "null"]
+        unverified_claims:
+          type: array
+          items:
+            type: string
+          description: >-
+            Grounding унасан үед — rationale дахь ямар тоо цитат tool call-д
+            ОЛДООГҮЙ болохыг ил нэрлэнэ. LLM засаад дахин оролдож болно.
+
+  - name: propose_tuning_change
+    access: propose
+    description: >-
+      Propose a new value for a whitelisted parameter, within its approved
+      bounds, backed by walk-forward backtest evidence. Applies to
+      paper/backtest only. Promotion to live requires an explicit human
+      action and can never be performed by any model.
+    input_schema:
+      type: object
+      required: [parameter, new_value, backtest_evidence]
+      properties:
+        parameter:
+          type: string
+        new_value:
+          type: string
+        backtest_evidence:
+          type: string
+          format: uuid
+          description: "`get_backtest_result`-ийн tool_call_id"
+      additionalProperties: false

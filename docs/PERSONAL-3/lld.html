@@ -1,0 +1,595 @@
+<!doctype html>
+<!-- PERSONAL-3 · lld · DESIGN · 2026-09-16 -->
+<html lang="mn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PERSONAL-3 — LLD дэлгэцийн дуурайлт (v1.0)</title>
+<style>
+  :root{
+    --bg:#0f1218; --panel:#171b23; --panel2:#1f2530; --line:#2b3240;
+    --fg:#e6e9ef; --dim:#9aa4b5; --faint:#6b7585;
+    --live:#e0484a; --paper:#3d7de0; --backtest:#6b7585;
+    --ok:#2fa06a; --warn:#d99a1f; --stop:#e0484a;
+    --agent:#8b6ce0; --manual:#2f9ba0; --tuning:#c47ad0; --external:#7b8496;
+    --mono:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  h1,h2,h3{margin:0 0 .4em;font-weight:600;line-height:1.25}
+  h1{font-size:20px} h2{font-size:16px} h3{font-size:13px;color:var(--dim);
+     text-transform:uppercase;letter-spacing:.06em}
+  code,.mono{font-family:var(--mono);font-size:12px}
+  .wrap{max-width:1120px;margin:0 auto;padding:20px}
+  .note{background:#151a22;border-left:3px solid var(--faint);padding:10px 14px;
+        color:var(--dim);font-size:13px;margin:14px 0}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:860px){.g2,.g3{grid-template-columns:1fr}}
+
+  /* ---------- App chrome ---------- */
+  .app{border:1px solid var(--line);border-radius:10px;overflow:hidden;
+       background:var(--panel);margin:0 0 26px}
+  .modebar{padding:7px 14px;font-weight:700;letter-spacing:.08em;font-size:12px;
+           display:flex;justify-content:space-between;align-items:center}
+  .mode-paper{background:var(--paper);color:#fff}
+  .mode-live{background:var(--live);color:#fff}
+  .mode-backtest{background:var(--backtest);color:#fff}
+  .statebar{display:flex;align-items:center;gap:12px;padding:9px 14px;
+            border-bottom:1px solid var(--line);background:var(--panel2);flex-wrap:wrap}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .st-active .dot{background:var(--ok)} .st-wind .dot{background:var(--warn)}
+  .st-halt .dot{background:var(--stop)}
+  .stlabel{font-weight:700;font-size:12px;letter-spacing:.06em}
+  .st-active .stlabel{color:var(--ok)} .st-wind .stlabel{color:var(--warn)}
+  .st-halt .stlabel{color:var(--stop)}
+  .streason{color:var(--dim);font-size:12px}
+  .spacer{flex:1}
+  .btn{border:1px solid var(--line);background:#232a36;color:var(--fg);
+       border-radius:6px;padding:5px 11px;font-size:12px;font-weight:600;cursor:default}
+  .btn-stop{background:var(--stop);border-color:var(--stop);color:#fff}
+  .btn-wind{background:var(--warn);border-color:var(--warn);color:#241c05}
+  .btn-go{background:var(--ok);border-color:var(--ok);color:#fff}
+  .btn[disabled],.btn.off{opacity:.34;filter:grayscale(.6)}
+  .nav{display:flex;gap:2px;padding:0 10px;background:var(--panel2);
+       border-bottom:1px solid var(--line);overflow-x:auto}
+  .nav span{padding:8px 11px;font-size:12px;color:var(--dim);white-space:nowrap;
+            border-bottom:2px solid transparent}
+  .nav span.on{color:var(--fg);border-bottom-color:var(--paper)}
+  .body{padding:14px}
+
+  /* ---------- Bits ---------- */
+  .banner{border:1px solid #6a5215;background:#2a2109;color:#f0d386;
+          padding:8px 12px;border-radius:6px;font-size:12.5px;margin-bottom:12px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px}
+  .kpi{font-size:22px;font-weight:700;font-family:var(--mono)}
+  .kpi.neg{color:var(--stop)} .kpi.pos{color:var(--ok)}
+  .sub{color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--faint);font-weight:600;font-size:11px;
+     text-transform:uppercase;letter-spacing:.05em;padding:6px 8px;
+     border-bottom:1px solid var(--line)}
+  td{padding:7px 8px;border-bottom:1px solid #222836;font-family:var(--mono);font-size:12px}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;
+       font-weight:700;letter-spacing:.04em;font-family:var(--mono)}
+  .t-agent{background:#2b2350;color:#c6b4ff;border:1px solid #4a3e80}
+  .t-manual{background:#123034;color:#8fe0e5;border:1px solid #27646a}
+  .t-tuning{background:#361f3a;color:#e6b6ef;border:1px solid #6a4272}
+  .t-external{background:#242a34;color:#a7b0bf;border:1px solid #3b4352}
+  .t-mixed{background:#3a2a13;color:#f0c98a;border:1px solid #6d4f1d}
+  .t-src{background:#122238;color:#9dc4f5;border:1px solid #2b4d7a}
+  .muted{color:var(--dim)} .faint{color:var(--faint)}
+  .link{color:#7fb2f5;text-decoration:none;border-bottom:1px dotted #3a5f8f}
+  .form{display:grid;grid-template-columns:130px 1fr;gap:8px 12px;align-items:center}
+  .in{background:#0e1219;border:1px solid var(--line);border-radius:5px;
+      padding:6px 9px;color:var(--fg);font-family:var(--mono);font-size:12px}
+  .in.off{opacity:.4}
+  .pill{font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);
+        color:var(--dim);font-family:var(--mono)}
+  .modal{border:1px solid #6a5215;background:#1d1a10;border-radius:8px;padding:14px;margin-top:12px}
+  .modal h3{color:#f0d386}
+  .flowbox{font-family:var(--mono);font-size:11.5px;white-space:pre;color:var(--dim);
+           background:#0d1016;border:1px solid var(--line);border-radius:8px;
+           padding:14px;overflow-x:auto}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--dim);margin-top:8px}
+  .caption{color:var(--faint);font-size:11.5px;margin:6px 0 18px}
+  .ac{font-family:var(--mono);font-size:10.5px;color:#7fb2f5}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>PERSONAL-3 — дэлгэцийн дуурайлт</h1>
+<p class="caption">
+  <code>lld.md</code>-ийн §16-ийн харагдах тал. Энэ бол <strong>статик
+  дуурайлт</strong> — ажиллагаатай код биш. Тоонууд нь жишээ. Дэлгэц бүрийн
+  дор аль AC-г хангаж байгааг тэмдэглэв.
+</p>
+
+<div class="note">
+  <strong>Гурван зүйлийг энэ дуурайлт БАТАЛЖ харуулна:</strong>
+  (1) горим (paper / live / backtest) ямар ч дэлгэц дээр эргэлзээгүй —
+  <span class="ac">AC-20</span>;
+  (2) арилжааны төлөв (ACTIVE / WINDING_DOWN / HALTED) ба гурван товч
+  утгаараа ялгарна — <span class="ac">AC-38</span>;
+  (3) order / позиц бүр эзэнтэй, эзэнгүй нь <code>external</code> —
+  <span class="ac">AC-29</span>.
+</div>
+
+<!-- ============ 1. Dashboard · ACTIVE · PAPER ============ -->
+<h2>1 · Dashboard — <span class="muted">ACTIVE, paper</span></h2>
+<div class="app">
+  <div class="modebar mode-paper"><span>PAPER — ХУУРАМЧ МӨНГӨ</span>
+    <span class="mono" style="font-weight:400">alpaca_paper · 2026-09-16T14:03:22Z</span></div>
+  <div class="statebar st-active">
+    <span class="dot"></span><span class="stlabel">ACTIVE</span>
+    <span class="streason">арилжаа идэвхтэй</span>
+    <span class="spacer"></span>
+    <button class="btn btn-stop">Зогсоо</button>
+    <button class="btn btn-wind">Унтраах бэлтгэл</button>
+    <button class="btn btn-go off" disabled>Идэвхжүүл</button>
+  </div>
+  <div class="nav">
+    <span class="on">Dashboard</span><span>Хэн юунд</span><span>Гарын арилжаа</span>
+    <span>Зөвшөөрөл (2)</span><span>Шийдвэрийн лог</span><span>Provider</span>
+    <span>Auto-tuning</span><span>Тохиргоо</span>
+  </div>
+  <div class="body">
+    <div class="grid g3" style="margin-bottom:14px">
+      <div class="card"><div class="sub">Equity</div><div class="kpi">$24,318.40</div>
+        <div class="faint mono" style="font-size:11px">alpaca_paper · 14:03:22Z</div></div>
+      <div class="card"><div class="sub">Өдрийн P&amp;L</div><div class="kpi neg">−$182.05</div>
+        <div class="faint mono" style="font-size:11px">DAILY_LOSS_LIMIT-ийн 37%</div></div>
+      <div class="card"><div class="sub">Нээлттэй позиц</div><div class="kpi">4</div>
+        <div class="faint mono" style="font-size:11px">нээлттэй order 3</div></div>
+    </div>
+
+    <h3>Нээлттэй позиц</h3>
+    <table>
+      <tr><th>Symbol</th><th>Ширхэг</th><th>Дундаж</th><th>Зах зээл</th>
+          <th>Хэрэгжээгүй P&amp;L</th><th>Эзэн (origin)</th></tr>
+      <tr><td>AAPL</td><td>12</td><td>195.00</td><td>2,340.00</td><td class="pos">+18.00</td>
+          <td><span class="tag t-agent">AI · claude-sonnet-5</span></td></tr>
+      <tr><td>MSFT</td><td>4</td><td>402.50</td><td>1,610.00</td><td class="neg">−8.00</td>
+          <td><span class="tag t-agent">AI · gpt-5</span></td></tr>
+      <tr><td>TSLA</td><td>5</td><td>241.00</td><td>1,205.00</td><td class="neg">−22.50</td>
+          <td><span class="tag t-manual">Гараар</span></td></tr>
+      <tr><td>NVDA</td><td>3</td><td>—</td><td>2,900.00</td><td class="pos">+41.00</td>
+          <td><span class="tag t-external">Системээс гадуур</span></td></tr>
+    </table>
+    <div class="caption" style="margin-top:8px">
+      NVDA-д локал <code>orders</code> бичлэг олдоогүй тул <code>external</code>.
+      Хамгийн ойрын agent order-т ХЭЗЭЭ Ч наагдахгүй — <span class="ac">AC-29</span>,
+      <code>lld.md</code> §11.1.
+    </div>
+
+    <h3 style="margin-top:16px">Нээлттэй order</h3>
+    <table>
+      <tr><th>Symbol</th><th>Тал</th><th>Ширхэг</th><th>Төрөл</th><th>Төлөв</th>
+          <th>Эзэн</th><th>Яагаад</th></tr>
+      <tr><td>AAPL</td><td>buy</td><td>3</td><td>limit 193.20</td><td>accepted</td>
+          <td><span class="tag t-agent">AI · claude-sonnet-5</span></td>
+          <td><a class="link" href="#">шийдвэр →</a></td></tr>
+      <tr><td>MSFT</td><td>sell</td><td>2</td><td>limit 405.00</td><td>accepted</td>
+          <td><span class="tag t-agent">AI · gpt-5</span></td>
+          <td><a class="link" href="#">шийдвэр →</a></td></tr>
+      <tr><td>SPY</td><td>buy</td><td>6</td><td>market</td><td>pending_approval</td>
+          <td><span class="tag t-agent">AI · claude-sonnet-5</span></td>
+          <td><a class="link" href="#">шийдвэр →</a></td></tr>
+    </table>
+  </div>
+</div>
+<div class="caption"><span class="ac">AC-1 · AC-2 · AC-20 · AC-29</span></div>
+
+<!-- ============ 2. Attribution ============ -->
+<h2>2 · «Хэн юунд арилжаа хийж байна» <span class="muted">— OP-11</span></h2>
+<div class="app">
+  <div class="modebar mode-paper"><span>PAPER — ХУУРАМЧ МӨНГӨ</span>
+    <span class="mono" style="font-weight:400">alpaca_paper · 14:03:22Z</span></div>
+  <div class="statebar st-active">
+    <span class="dot"></span><span class="stlabel">ACTIVE</span>
+    <span class="spacer"></span>
+    <button class="btn btn-stop">Зогсоо</button>
+    <button class="btn btn-wind">Унтраах бэлтгэл</button>
+    <button class="btn btn-go off" disabled>Идэвхжүүл</button>
+  </div>
+  <div class="nav">
+    <span>Dashboard</span><span class="on">Хэн юунд</span><span>Гарын арилжаа</span>
+    <span>Зөвшөөрөл (2)</span><span>Шийдвэрийн лог</span><span>Provider</span>
+    <span>Auto-tuning</span><span>Тохиргоо</span>
+  </div>
+  <div class="body">
+    <div class="grid g2">
+      <div class="card">
+        <div style="margin-bottom:8px"><span class="tag t-agent">Research Agent · claude-sonnet-5</span></div>
+        <table>
+          <tr><th>Symbol</th><th>Позиц</th><th>Нээлттэй order</th><th>Сүүлийн шийдвэр</th></tr>
+          <tr><td>AAPL</td><td>12 ш · $2,340.00</td><td>1</td>
+              <td>14:02:11Z <a class="link" href="#">яагаад →</a></td></tr>
+          <tr><td>SPY</td><td>—</td><td>1 <span class="pill">зөвшөөрөл хүлээж буй</span></td>
+              <td>14:01:40Z <a class="link" href="#">яагаад →</a></td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <div style="margin-bottom:8px"><span class="tag t-agent">Research Agent · gpt-5</span></div>
+        <table>
+          <tr><th>Symbol</th><th>Позиц</th><th>Нээлттэй order</th><th>Сүүлийн шийдвэр</th></tr>
+          <tr><td>MSFT</td><td>4 ш · $1,610.00</td><td>1</td>
+              <td>13:58:03Z <a class="link" href="#">яагаад →</a></td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <div style="margin-bottom:8px"><span class="tag t-manual">Гараар · operator</span></div>
+        <table>
+          <tr><th>Symbol</th><th>Позиц</th><th>Нээлттэй order</th><th>Сүүлийн үйлдэл</th></tr>
+          <tr><td>TSLA</td><td>5 ш · $1,205.00</td><td>0</td><td>11:20:55Z</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <div style="margin-bottom:8px"><span class="tag t-external">Системээс гадуур</span></div>
+        <table>
+          <tr><th>Symbol</th><th>Позиц</th><th>Нээлттэй order</th><th>Тэмдэглэл</th></tr>
+          <tr><td>NVDA</td><td>3 ш · $2,900.00</td><td>0</td>
+              <td class="faint">локал бичлэггүй</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="legend">
+      <span><span class="tag t-agent">AI</span> LLM-ийн санал</span>
+      <span><span class="tag t-tuning">Auto-tuning</span> хязгаартай тохируулагч</span>
+      <span><span class="tag t-manual">Гараар</span> operator өөрөө</span>
+      <span><span class="tag t-external">Гадуур</span> локал бичлэггүй</span>
+      <span><span class="tag t-mixed">Холимог</span> нэг symbol, олон эзэн</span>
+    </div>
+    <div class="caption" style="margin-top:10px">
+      Жагсаалт нь <code>orders</code> / <code>positions</code>-ийн БОДИТ мөрөөс
+      угсарна — тусдаа кэш байхгүй. Symbol бүр дор хаяж нэг мөрөнд буцаж
+      холбогдоно (<code>lld.md</code> §11.2).
+    </div>
+  </div>
+</div>
+<div class="caption"><span class="ac">AC-29 · AC-30</span></div>
+
+<!-- ============ 3. Manual ticket · WINDING_DOWN ============ -->
+<h2>3 · Гарын арилжааны ticket <span class="muted">— OP-12, WINDING_DOWN төлөвт</span></h2>
+<div class="app">
+  <div class="modebar mode-live"><span>⚠ LIVE — БОДИТ МӨНГӨ</span>
+    <span class="mono" style="font-weight:400">alpaca_live · 14:05:07Z</span></div>
+  <div class="statebar st-wind">
+    <span class="dot"></span><span class="stlabel">WINDING_DOWN</span>
+    <span class="streason">позиц хаах цонх · үлдсэн <strong class="mono">12:34</strong></span>
+    <span class="spacer"></span>
+    <button class="btn btn-stop">Зогсоо</button>
+    <button class="btn btn-wind off" disabled>Унтраах бэлтгэл</button>
+    <button class="btn btn-go">Идэвхжүүл</button>
+  </div>
+  <div class="nav">
+    <span>Dashboard</span><span>Хэн юунд</span><span class="on">Гарын арилжаа</span>
+    <span>Зөвшөөрөл (2)</span><span>Шийдвэрийн лог</span><span>Provider</span>
+    <span>Auto-tuning</span><span>Тохиргоо</span>
+  </div>
+  <div class="body">
+    <div class="banner">
+      <strong>Унтраах бэлтгэл идэвхтэй.</strong> Зөвхөн позиц <strong>багасгах /
+      хаах</strong> order зөвшөөрөгдөнө. Эрсдэл нэмэгдүүлэх чиглэл идэвхгүй.
+      Grace дуусахад систем <code>HALTED</code> болно — нээлттэй позиц
+      автоматаар хаагдахгүй.
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>Шинэ order</h3>
+        <div class="form">
+          <label class="muted">Symbol</label><input class="in" value="TSLA">
+          <label class="muted">Тал</label>
+          <div><span class="btn off" style="margin-right:6px">buy — эрсдэл нэмнэ</span>
+               <span class="btn btn-go">sell — позиц хаана</span></div>
+          <label class="muted">Ширхэг</label><input class="in" value="5">
+          <label class="muted">Order төрөл</label><input class="in" value="limit">
+          <label class="muted">Үнэ</label><input class="in" value="243.10">
+        </div>
+        <div class="caption" style="margin-top:10px">
+          <code>buy</code> идэвхгүй: одоогийн позиц LONG 5 — худалдан авалт нь
+          exposure нэмнэ (<code>lld.md</code> §8.2).
+        </div>
+      </div>
+      <div class="card">
+        <h3>Илгээхээс өмнө</h3>
+        <table>
+          <tr><td>Тооцоолсон notional</td><td style="text-align:right">$1,215.50</td></tr>
+          <tr><td>Сүүлийн quote</td><td style="text-align:right">243.10 <span class="tag t-src">alpaca_live</span></td></tr>
+          <tr><td>MAX_ORDER_NOTIONAL</td><td style="text-align:right">$1,000.00</td></tr>
+        </table>
+        <h3 style="margin-top:12px">Risk-ийн урьдчилсан үнэлгээ</h3>
+        <table>
+          <tr><td>system_state</td><td class="pos" style="text-align:right">дамжив (хаах чиглэл)</td></tr>
+          <tr><td>restricted_symbol</td><td class="pos" style="text-align:right">дамжив</td></tr>
+          <tr><td>price_sanity</td><td class="pos" style="text-align:right">дамжив</td></tr>
+          <tr><td>pdt_day_trades</td><td class="pos" style="text-align:right">дамжив (2/3)</td></tr>
+          <tr><td>order_notional</td><td class="neg" style="text-align:right">ESCALATE — босго давсан</td></tr>
+        </table>
+        <div class="modal">
+          <h3>⚠ Баталгаажуулалт шаардлагатай</h3>
+          <p style="margin:6px 0;font-size:13px">
+            Энэ order-ийн дүн <strong>$1,215.50</strong> нь
+            <code>MAX_ORDER_NOTIONAL</code> ($1,000.00) хязгаараас давсан.
+            Илгээхийг баталгаажуулна уу.</p>
+          <p class="faint mono" style="font-size:11px">
+            token: cnf_7f3a…c21 · хүчинтэй 120s · бие өөрчлөгдвөл хүчингүй</p>
+          <button class="btn btn-go">Баталж илгээх</button>
+          <button class="btn" style="margin-left:6px">Болих</button>
+        </div>
+      </div>
+    </div>
+    <div class="caption" style="margin-top:12px">
+      Гарын order нь agent-ийн order-той ЯГ ижил Risk → Execution замаар явна.
+      One-click / chart-аас чирж тавих БАЙХГҮЙ (dark-pattern хориг, спек §8).
+    </div>
+  </div>
+</div>
+<div class="caption"><span class="ac">AC-31 · AC-32 · AC-33 · AC-38</span></div>
+
+<!-- ============ 4. HALTED ============ -->
+<h2>4 · <span class="muted">HALTED</span> — circuit breaker ажилласан</h2>
+<div class="app">
+  <div class="modebar mode-live"><span>⚠ LIVE — БОДИТ МӨНГӨ</span>
+    <span class="mono" style="font-weight:400">alpaca_live · 14:18:02Z</span></div>
+  <div class="statebar st-halt">
+    <span class="dot"></span><span class="stlabel">HALTED</span>
+    <span class="streason">шалтгаан: <code>daily_loss</code> — өдрийн алдагдал
+      DAILY_LOSS_LIMIT давсан (14:17:55Z, circuit_breaker)</span>
+    <span class="spacer"></span>
+    <button class="btn btn-stop off" disabled>Зогсоо</button>
+    <button class="btn btn-wind off" disabled>Унтраах бэлтгэл</button>
+    <button class="btn btn-go">Идэвхжүүл</button>
+  </div>
+  <div class="nav">
+    <span class="on">Dashboard</span><span>Хэн юунд</span><span>Гарын арилжаа</span>
+    <span>Зөвшөөрөл (0)</span><span>Шийдвэрийн лог</span><span>Provider</span>
+    <span>Auto-tuning</span><span>Тохиргоо</span>
+  </div>
+  <div class="body">
+    <div class="banner" style="border-color:#6a1f1f;background:#2a1010;color:#f0a0a0">
+      <strong>Шинэ order илгээх бүх зам хаалттай</strong> — agent, гарын
+      ticket, зөвшөөрлийн дараалал гуравуулаа. Нээлттэй позиц автоматаар
+      хаагдаагүй. Байгаа order-ыг цуцлах боломжтой хэвээр.
+    </div>
+    <div class="card">
+      <h3>Идэвхжүүлэхийн өмнөх шалгалт</h3>
+      <table>
+        <tr><th>Метрик</th><th>Одоогийн</th><th>Хязгаар</th><th>Төлөв</th></tr>
+        <tr><td>daily_loss</td><td>$512.30</td><td>DAILY_LOSS_LIMIT = $486.36</td>
+            <td class="neg">давсан хэвээр</td></tr>
+        <tr><td>api_error_rate</td><td>0.4%</td><td>ERROR_RATE_LIMIT</td><td class="pos">хэвийн</td></tr>
+        <tr><td>order_reject_rate</td><td>1.1%</td><td>REJECT_RATE_LIMIT</td><td class="pos">хэвийн</td></tr>
+        <tr><td>ws_disconnects</td><td>0</td><td>WS_DISCONNECT_LIMIT</td><td class="pos">хэвийн</td></tr>
+      </table>
+      <div class="caption" style="margin-top:10px">
+        <code>activate</code> нь эдгээр метрикийг <strong>дахин хэмжинэ</strong> —
+        хадгалагдсан «цэвэрлэсэн» туг БАЙХГҮЙ. <code>daily_loss</code> давсан
+        хэвээр байвал 409 <code>breaker_still_tripped</code>
+        (<code>lld.md</code> §15.2).
+      </div>
+    </div>
+  </div>
+</div>
+<div class="caption"><span class="ac">AC-14 · AC-15 · AC-16 · AC-33 · AC-37 · AC-38</span></div>
+
+<!-- ============ 5. Decision log ============ -->
+<h2>5 · Шийдвэрийн лог — <span class="muted">«яагаад» нь дүгнэлт биш, өгөгдөл</span></h2>
+<div class="app">
+  <div class="modebar mode-paper"><span>PAPER — ХУУРАМЧ МӨНГӨ</span>
+    <span class="mono" style="font-weight:400">alpaca_paper · 14:03:22Z</span></div>
+  <div class="statebar st-active">
+    <span class="dot"></span><span class="stlabel">ACTIVE</span><span class="spacer"></span>
+    <button class="btn btn-stop">Зогсоо</button>
+    <button class="btn btn-wind">Унтраах бэлтгэл</button>
+    <button class="btn btn-go off" disabled>Идэвхжүүл</button>
+  </div>
+  <div class="nav">
+    <span>Dashboard</span><span>Хэн юунд</span><span>Гарын арилжаа</span>
+    <span>Зөвшөөрөл (2)</span><span class="on">Шийдвэрийн лог</span><span>Provider</span>
+    <span>Auto-tuning</span><span>Тохиргоо</span>
+  </div>
+  <div class="body">
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <span class="tag t-agent">claude-sonnet-5</span>
+        <strong class="mono">AAPL buy 3 @ limit 193.20</strong>
+        <span class="pill">14:02:11Z</span>
+        <span class="pill" style="color:var(--ok);border-color:#2a5f45">Risk: APPROVE</span>
+        <span class="pill" style="color:var(--ok);border-color:#2a5f45">Grounding: дамжив</span>
+      </div>
+      <div class="muted" style="font-size:13px;margin-bottom:10px">
+        «AAPL сүүлийн үнэ 193.45, 20 хоногийн дунджаас 1.2% доош. Дансанд
+        $8,400 buying power байгаа тул 3 ширхэгийн limit order 193.20-д тавихыг
+        санал болгож байна.»
+      </div>
+      <h3>Цитат tool call — түүхий payload</h3>
+      <div class="flowbox">tool_call 9c1f…a4  get_quote(symbol="AAPL")   source=alpaca_paper  14:02:08Z
+  { "symbol":"AAPL", "bid":"193.42", "ask":"193.48",
+    "last":"193.45", "quote_ts":"2026-09-16T14:02:07Z" }
+
+tool_call 2d80…e7  get_account()               source=alpaca_paper  14:02:09Z
+  { "equity":"24318.40", "cash":"8400.00",
+    "buying_power":"8400.00", "day_trade_count":2 }
+
+grounding: rationale-ийн тоо бүр цитат payload-д олдов
+  193.45 ✓ (get_quote.last)   8400 ✓ (get_account.buying_power)
+  1.2%   ✓ (get_bars 20d — tool_call 5b11…9f)
+  20     — WINDOW_TOKENS, мэдэгдэл гэж тооцогдоогүй</div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <span class="tag t-agent">gpt-5</span>
+        <strong class="mono">COIN buy 40 @ market</strong>
+        <span class="pill">13:44:02Z</span>
+        <span class="pill" style="color:var(--stop);border-color:#6a2a2a">Grounding: УНАСАН</span>
+      </div>
+      <div class="muted" style="font-size:13px;margin-bottom:10px">
+        «COIN 248.90 хүртэл унасан, 5%-ийн эргэлт хүлээгдэж байна.»
+      </div>
+      <div class="flowbox">unverified_claims: ["248.90", "5%"]
+цитат tool_call 71ac…30 get_quote("COIN") → { "last":"263.15", ... }
+  → 248.90 payload-д БАЙХГҮЙ.  5% БАЙХГҮЙ.
+
+Үр дүн: Risk Agent хүртэл ОЧСОНГҮЙ. agent_decisions.outcome=grounding_failed
+        unverified_claims нь LLM рүү буцав — засаж дахин оролдох боломжтой.</div>
+    </div>
+  </div>
+</div>
+<div class="caption"><span class="ac">AC-7 · AC-8 · AC-9 · AC-17</span></div>
+
+<!-- ============ 6. State machine ============ -->
+<h2>6 · Төлөвийн машин <span class="muted">— OP-13-ийн цөм</span></h2>
+<div class="app"><div class="body">
+<div class="flowbox">                    POST /system/wind-down
+          ┌─────────────────────────────────────┐
+          │                                     ▼
+     ┌──────────┐                     ┌────────────────┐
+     │  ACTIVE  │                     │  WINDING_DOWN  │
+     │  ● ногоон │                     │  ● шар · 12:34 │
+     └──────────┘                     └────────────────┘
+          │ POST /kill-switch                │  │
+          │ эсвэл breaker trip               │  │ grace дуусав (scheduler)
+          │                                  │  │ эсвэл POST /kill-switch
+          ▼                                  │  ▼
+     ┌────────────────────────────────────────────┐
+     │                  HALTED                     │
+     │  ● улаан · шалтгаан ил · шинэ order = 0     │
+     └────────────────────────────────────────────┘
+          ▲                                  │
+          │  ⟳ process restart               │  POST /system/activate
+          │    (төлөв ХАДГАЛАГДАНА,           │  · баталгаажуулалтын token
+          │     ACTIVE болж БОСОХГҮЙ)         │  · breaker метрик ДАХИН хэмжигдэнэ
+          └──────────────────────────────────┘
+
+  ✗ halted → winding_down шилжилт ЗОРИУДААР БАЙХГҮЙ
+  ✗ автомат ACTIVE болох зам ХААНА Ч БАЙХГҮЙ
+  ✗ WINDING_DOWN нь позицыг АВТОМАТААР ХААХГҮЙ — зөвхөн хаах цонх нээнэ</div>
+<div class="caption" style="margin-top:10px">
+  Төлөв Postgres-ийн <code>system_state</code> хүснэгтэд (append-only).
+  Redis-д БИШ — Redis унасан ч төлөв алдагдахгүй (<code>lld.md</code> §6.3).
+</div>
+</div></div>
+<div class="caption"><span class="ac">AC-34 · AC-35 · AC-36 · AC-37</span></div>
+
+<!-- ============ 7. Provider switcher + approvals ============ -->
+<h2>7 · Provider switcher ба зөвшөөрлийн дараалал</h2>
+<div class="grid g2">
+  <div class="app"><div class="body">
+    <h3>Provider — Research role</h3>
+    <table>
+      <tr><th>Provider</th><th>Transport</th><th>Эрх</th><th>Эрүүл</th><th></th></tr>
+      <tr><td>claude-mcp<br><span class="faint">claude-sonnet-5</span></td><td>MCP</td>
+          <td>propose</td><td class="pos">✓</td>
+          <td><span class="pill" style="color:var(--ok);border-color:#2a5f45">ИДЭВХТЭЙ</span></td></tr>
+      <tr><td>openai-fc<br><span class="faint">gpt-5</span></td><td>function calling</td>
+          <td>propose</td><td class="pos">✓</td><td><button class="btn">Солих</button></td></tr>
+      <tr><td>xai-fc<br><span class="faint">grok-4</span></td><td>function calling</td>
+          <td>propose</td><td class="neg">✗ timeout</td><td><button class="btn off" disabled>Солих</button></td></tr>
+      <tr><td>local-readonly<br><span class="faint">llama-local</span></td><td>stdio JSON</td>
+          <td class="faint">зөвхөн унших</td><td class="pos">✓</td><td><button class="btn">Солих</button></td></tr>
+    </table>
+    <div class="caption" style="margin-top:10px">
+      Солилт нь restart шаардахгүй. Нислэг дунд байгаа дуудалт хуучин
+      provider-оор дуусч, ХУУЧНААР бүртгэгдэнэ. <code>local-readonly</code>-д
+      <code>propose_order</code> схемээс бүрэн хасагдана (INV-5).
+    </div>
+  </div></div>
+
+  <div class="app"><div class="body">
+    <h3>Зөвшөөрөл хүлээж буй (2)</h3>
+    <div class="card" style="margin-bottom:10px">
+      <div class="mono" style="font-weight:700;margin-bottom:4px">SPY buy 6 @ market</div>
+      <div class="faint mono" style="font-size:11px;margin-bottom:6px">
+        claude-sonnet-5 · notional $2,880.00 &gt; MAX_ORDER_NOTIONAL $1,000.00</div>
+      <div class="muted" style="font-size:12.5px;margin-bottom:8px">
+        «Индексийн богино хугацааны эргэлтийн дохио…» <a class="link" href="#">цитат өгөгдөл →</a></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn btn-go">Зөвшөөрөх</button>
+        <button class="btn btn-stop">Татгалзах</button>
+        <span class="pill" style="margin-left:auto">TTL · 04:12</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="mono" style="font-weight:700;margin-bottom:4px">COIN sell 20 @ limit 262.00</div>
+      <div class="faint mono" style="font-size:11px;margin-bottom:6px">
+        gpt-5 · notional $5,240.00 &gt; MAX_ORDER_NOTIONAL</div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn btn-go">Зөвшөөрөх</button>
+        <button class="btn btn-stop">Татгалзах</button>
+        <span class="pill" style="margin-left:auto">TTL · 00:38</span>
+      </div>
+    </div>
+    <div class="caption" style="margin-top:10px">
+      TTL дуусахад мөр автоматаар <code>expired</code> болно — дараа нь
+      зөвшөөрөх боломжгүй (<span class="ac">AC-6</span>).
+    </div>
+  </div></div>
+</div>
+<div class="caption"><span class="ac">AC-5 · AC-6 · AC-10 · AC-11</span></div>
+
+<!-- ============ 8. Staleness + backtest ============ -->
+<h2>8 · Хоёр эргэлзээгүй байдал</h2>
+<div class="grid g2">
+  <div class="app">
+    <div class="modebar mode-paper"><span>PAPER — ХУУРАМЧ МӨНГӨ</span></div>
+    <div class="statebar st-active"><span class="dot"></span>
+      <span class="stlabel">ACTIVE</span></div>
+    <div class="body">
+      <div class="banner">
+        ⚠ <strong>Өгөгдөл хуучирсан.</strong> WebSocket 7 секунд чимээгүй.
+        Сүүлийн шинэчлэлт <code>14:03:22Z</code>. Доорх тоонууд live БИШ.
+      </div>
+      <table>
+        <tr><th>Symbol</th><th>Үнэ</th><th>Төлөв</th></tr>
+        <tr><td>AAPL</td><td class="faint">193.45</td>
+            <td><span class="pill" style="color:#f0d386;border-color:#6a5215">stale</span></td></tr>
+      </table>
+      <div class="caption" style="margin-top:10px">
+        Хуучин өгөгдөл live мэт шошгогүй ХЭЗЭЭ Ч харагдахгүй.
+        Клиент <code>onclose</code>-ийг хүлээхгүй — чимээгүй тасалдлыг
+        heartbeat-аар илрүүлнэ (<span class="ac">AC-2</span>).
+      </div>
+    </div>
+  </div>
+
+  <div class="app">
+    <div class="modebar mode-backtest"><span>BACKTEST — ТҮҮХЭН ӨГӨГДӨЛ</span>
+      <span class="mono" style="font-weight:400">2024-01-01 → 2025-12-31</span></div>
+    <div class="statebar st-active"><span class="dot"></span>
+      <span class="stlabel">ACTIVE</span>
+      <span class="streason">backtest харагдац — бодит арилжаа хөндөгдөөгүй</span></div>
+    <div class="body">
+      <table>
+        <tr><th>Метрик</th><th>In-sample</th><th>Out-of-sample</th></tr>
+        <tr><td>Sharpe</td><td>1.42</td><td>0.88</td></tr>
+        <tr><td>Max drawdown</td><td>−8.2%</td><td>−12.6%</td></tr>
+        <tr><td>Fold тоо</td><td colspan="2">6 (walk-forward)</td></tr>
+      </table>
+      <div class="caption" style="margin-top:10px">
+        Backtest өгөгдөл нь live/paper-тэй НЭГ хүснэгтэд ХЭЗЭЭ Ч харагдахгүй —
+        тусдаа дэлгэц, тусдаа хүсэлт. Playwright тест нь нэг хүснэгтэд хоёр
+        <code>source</code> шошго зэрэг байвал унана
+        (<span class="ac">AC-21</span>).
+      </div>
+    </div>
+  </div>
+</div>
+<div class="caption"><span class="ac">AC-2 · AC-20 · AC-21 · AC-22</span></div>
+
+<div class="note" style="margin-top:26px">
+  <strong>Энэ дуурайлтад ЗОРИУДААР БАЙХГҮЙ зүйлс:</strong>
+  one-click order · chart-аас чирж тавих · «дахин худалдан ав» түлхэц ·
+  gamified streak · мэдэгдлийн спам · Settings дээр эрсдэлийн хязгаар засах
+  талбар. Эхний тавь нь спек §8-ийн dark-pattern хориг; сүүлийнх нь §7-ийн
+  хязгаарыг SPEC_APPROVE-ийн хаалгаар л өөрчлөгддөг болгох (P-2).
+</div>
+
+</div>
+</body>
+</html>
