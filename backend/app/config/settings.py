@@ -66,6 +66,17 @@ class Settings(BaseSettings):
 
     RESTRICTED_SYMBOLS: str = ""
 
+    # --- автономи research loop (LLD-д тусгаагүй, T-99 хувийн төсөл) ---
+    #: Гурвын аль нь ч байхгүй бол `run_research_cycle` чимээгүй алгасна —
+    #: провайдер тохируулаагүй нь эвдрэл БИШ.
+    ANTHROPIC_API_KEY: str | None = None
+    CLAUDE_MODEL: str = "claude-opus-5"
+    LOCAL_MODEL_URL: str | None = None
+    LOCAL_MODEL_NAME: str = "llama3.1"
+    RESEARCH_SYMBOLS: str = "AAPL,MSFT,SPY"
+    RESEARCH_INTERVAL_SECONDS: int = 300
+    RESEARCH_MAX_TOOL_TURNS: int = 6
+
     # --- дэд бүтэц ---
     DATABASE_URL: str = "sqlite+aiosqlite:///./p3.db"
     REDIS_URL: str | None = None
@@ -100,6 +111,10 @@ class Settings(BaseSettings):
     @property
     def restricted_symbols(self) -> frozenset[str]:
         return frozenset(s.strip() for s in self.RESTRICTED_SYMBOLS.split(",") if s.strip())
+
+    @property
+    def research_symbols(self) -> list[str]:
+        return [s.strip().upper() for s in self.RESEARCH_SYMBOLS.split(",") if s.strip()]
 
     @property
     def mode(self) -> TradingMode:

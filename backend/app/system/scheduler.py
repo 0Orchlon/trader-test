@@ -10,6 +10,7 @@
 | `expire_approvals` | 30s | TTL дууссан approval → `expired` |
 | `enforce_breaker`  | 5s | дөрвөн метрик; босго давбал `halted` |
 | `reconcile_eod`    | өдөрт 1 | Alpaca ↔ локал тулгалт |
+| `run_research_cycle` | `RESEARCH_INTERVAL_SECONDS` | автономи LLM мөчлөг (T-99, хувийн төсөл) |
 
 APScheduler-ийг ЭНД л мэднэ: бусад модуль цэвэр async функц хэвээр тул
 тест нь scheduler-гүйгээр шууд дуудна.
@@ -60,6 +61,13 @@ async def reconcile_eod(sessionmaker, settings, broker, publisher):
         return await reconcile(session, broker, settings=settings, publisher=publisher)
 
 
+async def run_research_cycle(sessionmaker, settings, broker, publisher, provider_router, bus) -> None:
+    """T-99 (хувийн төсөл, LLD-д тусгаагүй) — автономи LLM decision cycle."""
+    from app.agents.runner import run_research_cycle as _run_research_cycle
+
+    await _run_research_cycle(sessionmaker, settings, broker, publisher, provider_router, bus)
+
+
 def schedule_wind_down_deadline(app, deadline) -> None:
     """Grace дуусах ЯГ агшинд ажиллах нэг удаагийн job (LLD §6.4, D-8).
 
@@ -106,5 +114,11 @@ def build_scheduler(app) -> AsyncIOScheduler:
     scheduler.add_job(
         reconcile_eod, CronTrigger(hour=EOD_HOUR_UTC, minute=0, timezone="UTC"),
         args=[sessionmaker, settings, broker, publisher], id="reconcile_eod",
+    )
+    scheduler.add_job(
+        run_research_cycle, "interval", seconds=settings.RESEARCH_INTERVAL_SECONDS,
+        args=[sessionmaker, settings, broker, publisher, app.state.provider_router, app.state.bus],
+        id="run_research_cycle", max_instances=1, coalesce=True,
+        misfire_grace_time=settings.RESEARCH_INTERVAL_SECONDS,
     )
     return scheduler

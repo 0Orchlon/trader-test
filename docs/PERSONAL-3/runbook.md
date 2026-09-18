@@ -218,7 +218,51 @@ jq '.orders[] | {client_order_id, symbol, side, qty, origin, rationale}' reconst
 
 ---
 
-## 8. Өдөр тутмын шалгалт
+## 8. Автономи research loop + profit cut (T-99, хувийн төсөл, LLD-д тусгаагүй)
+
+Энэ хэсэг зөвхөн хувийн (компанийн бус) байршуулалтад хамаарна.
+
+### 8.1 Идэвхжүүлэх
+
+`backend/.env`-д:
+```bash
+ANTHROPIC_API_KEY=sk-ant-...        # Claude-аар мөчлөг ажиллуулах бол
+LOCAL_MODEL_URL=http://host.docker.internal:11434/v1/chat/completions  # local бол
+LOCAL_MODEL_NAME=llama3.1
+RESEARCH_SYMBOLS=AAPL,MSFT,SPY
+RESEARCH_INTERVAL_SECONDS=300
+```
+Хоёулаа хоосон бол `run_research_cycle` job чимээгүй алгасна (эвдрэл БИШ).
+`docker compose up -d backend` дараа Provider Switcher (`/providers`) дотор
+`local-fc` idний provider харагдана — `research` role-д идэвхжүүлбэл
+(эсвэл `claude-mcp` анхдагчаар) тэр мөчлөг тус тус ажиллана. **Систем
+`active` төлөвтэй, зах зээл нээлттэй үед л ажиллана** — `halted`/
+`winding_down` эсвэл хаалттай зах дээр чимээгүй алгасна.
+
+### 8.2 Хүний оролт БАЙХГҮЙ гэдэг нь юу гэсэн үг вэ
+
+`propose_order`-ийн Risk Agent-ийн ESCALATE_TO_HUMAN (>`MAX_ORDER_NOTIONAL`)
+хэвээрээ л мөр үүсгэдэг `/approvals`-д — ГЭХДЭЭ хэн ч дараагүй бол
+`APPROVAL_TTL` хугацаанд `expire_approvals` job (30s) автоматаар `expired`
+болгож reject хийнэ. Ямар ч гараар дарах алхам ХЭРЭГГҮЙ — энэ бол зогсоох
+биш, автомат татгалзал.
+
+### 8.3 Profit cut
+
+```bash
+curl -X POST localhost:8000/api/v1/capital/withdraw -d '{"pct": "30"}'
+curl localhost:8000/api/v1/capital/summary
+```
+Alpaca руу ЮУ Ч илгээгдэхгүй — локал ledger. `total_withdrawn`-ийг
+`GET /account`-ийн raw equity-ээс ХЭЗЭЭ Ч хасахгүй (AC-1) — зөвхөн Risk
+Agent-ийн дараагийн шийдвэр бүрийн `equity`/`last_equity`-г тооцно
+(`risk_context.build`). Өөрөөр хэлбэл: 30% авсны дараа R6/R7/R8/R5 бүгд
+үлдсэн ~70%-иар тооцоолж эхэлнэ, LLM хэт том санал гаргавал `risk_rejected`
+болно — trust-аар БИШ, хатуу дүрмээр хязгаарлагдана.
+
+---
+
+## 9. Өдөр тутмын шалгалт
 
 ```bash
 curl -s localhost:8000/api/v1/health | jq '{status, broker:.broker.reachable, redis:.redis.reachable}'

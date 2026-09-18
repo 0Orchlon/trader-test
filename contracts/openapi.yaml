@@ -41,6 +41,8 @@ tags:
     description: Agent-ийн шийдвэр, provider-ийн удирдлага
   - name: tuning
     description: Хязгаартай auto-tuning
+  - name: capital
+    description: Симуляцлагдсан profit-cut ledger (T-99, хувийн төсөл)
 
 security:
   - operatorSession: []
@@ -516,6 +518,51 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Problem"
+
+  /capital/withdraw:
+    post:
+      operationId: postCapitalWithdraw
+      tags: [capital]
+      summary: Симуляцлагдсан profit-cut (T-99, хувийн төсөл)
+      description: |
+        Alpaca руу ЮУ Ч илгээхгүй — локал ledger-д бичигдэнэ. Нийлбэр
+        (`GET /capital/summary`) нь энэ цэгээс хойшхи Risk Agent-ийн
+        equity/exposure тооцоолол бүрээс хасагдана; `GET /account`-ийн
+        raw Alpaca утгыг ХЭЗЭЭ Ч өөрчлөхгүй (AC-1).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalEnvelope"
+        "422":
+          description: "`amount`/`pct`-ийн аль нь ч байхгүй/хоёул өгөгдсөн, эсвэл мужаас гадуур"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /capital/summary:
+    get:
+      operationId: getCapitalSummary
+      tags: [capital]
+      summary: Broker equity, нийт татан авалт, үр дүнтэй equity
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapitalSummaryEnvelope"
+        "503":
+          $ref: "#/components/responses/BrokerUnavailable"
 
   /system/state:
     get:
@@ -1608,6 +1655,61 @@ components:
                 ХУУЧНААР бүртгэгдэнэ.
             switched_at:
               $ref: "#/components/schemas/Utc"
+
+    WithdrawRequest:
+      type: object
+      description: "`amount` эсвэл `pct`-ийн ЗӨВХӨН нэгийг өгнө."
+      properties:
+        amount:
+          $ref: "#/components/schemas/Money"
+        pct:
+          type: string
+          description: "(0, 100] мужийн хувь. `equity`-ээс тооцогдоно."
+        note:
+          type: string
+
+    WithdrawalEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [withdrawal]
+          properties:
+            withdrawal:
+              type: object
+              required: [id, amount, equity_at_withdrawal]
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                amount:
+                  $ref: "#/components/schemas/Money"
+                pct:
+                  type: [string, "null"]
+                equity_at_withdrawal:
+                  $ref: "#/components/schemas/Money"
+                note:
+                  type: [string, "null"]
+
+    CapitalSummaryEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          broker_equity: "104238.17"
+          total_withdrawn: "30000.00"
+          effective_equity: "74238.17"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [broker_equity, total_withdrawn, effective_equity]
+          properties:
+            broker_equity:
+              $ref: "#/components/schemas/Money"
+            total_withdrawn:
+              $ref: "#/components/schemas/Money"
+            effective_equity:
+              $ref: "#/components/schemas/Money"
 
     TuningEnvelope:
       examples:

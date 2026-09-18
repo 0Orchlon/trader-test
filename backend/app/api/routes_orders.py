@@ -172,7 +172,7 @@ async def post_orders_manual(
     # 2) Risk-ийн контекст — бүгд бодит уншилт (LLD §8.3).
     try:
         ctx = await build_risk_context(
-            broker, settings, state.state, intent.symbol, idempotency_key=key
+            broker, settings, state.state, intent.symbol, idempotency_key=key, session=session
         )
     except BrokerUnavailable as exc:
         raise problem("broker_unavailable", 503, str(exc)) from exc

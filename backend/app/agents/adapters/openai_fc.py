@@ -20,6 +20,12 @@ SPEC = ProviderSpec(
 XAI_SPEC = ProviderSpec(
     id="xai-fc", vendor="xai", model="grok-4", transport="function_calling"
 )
+#: T-99 (хувийн төсөл): `local-fallback`-аас ЗОРИУДААР ТУСДАА — тэр нь
+#: `read_only=True` аюулгүй байдлын хаалга (INV-5), санал ХЭЗЭЭ Ч гаргахгүй.
+#: Local загвар бодит арилжаа хийхийг хүсвэл ЭНД, шинэ id-аар.
+LOCAL_FC_SPEC = ProviderSpec(
+    id="local-fc", vendor="local", model="local", transport="function_calling"
+)
 
 
 class OpenAiFcAdapter(BaseAdapter):
@@ -56,4 +62,12 @@ class OpenAiFcAdapter(BaseAdapter):
 
 class XaiFcAdapter(OpenAiFcAdapter):
     def __init__(self, spec: ProviderSpec = XAI_SPEC) -> None:
+        super().__init__(spec=spec)
+
+
+class LocalFcAdapter(OpenAiFcAdapter):
+    """Local model (Ollama/LM Studio-төрлийн OpenAI-нийцтэй сервер) — БИЧИХ
+    эрхтэй (`read_only=False`), `local-fallback`-аас ялгаатай."""
+
+    def __init__(self, spec: ProviderSpec = LOCAL_FC_SPEC) -> None:
         super().__init__(spec=spec)

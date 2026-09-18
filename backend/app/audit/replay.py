@@ -37,6 +37,7 @@ KNOWN_EVENTS = (
     "reconciliation_drift",
     "tuning_applied",
     "tuning_promoted",
+    "capital_withdrawn",
 )
 
 
@@ -76,6 +77,7 @@ class Replay:
     approvals: list[dict] = field(default_factory=list)
     provider_switches: list[dict] = field(default_factory=list)
     tuning_changes: list[dict] = field(default_factory=list)
+    withdrawals: list[dict] = field(default_factory=list)
     unknown_events: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
@@ -86,6 +88,7 @@ class Replay:
             "approvals": self.approvals,
             "provider_switches": self.provider_switches,
             "tuning_changes": self.tuning_changes,
+            "withdrawals": self.withdrawals,
             "unknown_events": sorted(set(self.unknown_events)),
         }
 
@@ -163,6 +166,9 @@ def reduce_events(rows) -> Replay:
             replay.tuning_changes.append(
                 {"at": to_iso(ts), "kind": event, "actor": row.actor, **payload}
             )
+
+        elif event == "capital_withdrawn":
+            replay.withdrawals.append({"at": to_iso(ts), "actor": row.actor, **payload})
 
     return replay
 

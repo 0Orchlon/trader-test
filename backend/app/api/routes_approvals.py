@@ -131,7 +131,12 @@ async def post_approve(
     intent = intent_from(row.proposed_order)
     try:
         ctx = await build_risk_context(
-            broker, settings, state.state, intent.symbol, idempotency_key=str(row.id)
+            broker,
+            settings,
+            state.state,
+            intent.symbol,
+            idempotency_key=str(row.id),
+            session=session,
         )
     except BrokerUnavailable as exc:
         raise problem("broker_unavailable", 503, str(exc)) from exc

@@ -103,6 +103,7 @@ def create_app(
     from app.api import (
         routes_agents,
         routes_approvals,
+        routes_capital,
         routes_orders,
         routes_read,
         routes_system,
@@ -117,6 +118,7 @@ def create_app(
         routes_system,
         routes_agents,
         routes_tuning,
+        routes_capital,
     ):
         app.include_router(module.router, prefix=API_PREFIX)
     app.include_router(ws.router)

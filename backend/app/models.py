@@ -239,6 +239,26 @@ class Confirmation(Base):
     consumed_at: Mapped[datetime | None] = mapped_column(TS)
 
 
+class CapitalWithdrawal(Base):
+    """Симуляцлагдсан profit-cut түүх (append-only, зөвхөн INSERT).
+
+    Alpaca руу ЮУ Ч илгээхгүй — локал бүртгэл. Нийлбэр нь риск тооцоолол
+    ажиллах «үр дүнтэй equity»-г Alpaca-ийн бодит equity-ээс хасна
+    (`app.api.risk_context.build`).
+    """
+
+    __tablename__ = "capital_withdrawals"
+
+    id: Mapped[uuid.UUID] = mapped_column(SAUuid, primary_key=True, default=uuid.uuid4)
+    amount: Mapped[Decimal] = mapped_column(NUM, nullable=False)
+    pct: Mapped[Decimal | None] = mapped_column(NUM)
+    equity_at_withdrawal: Mapped[Decimal] = mapped_column(NUM, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TS, nullable=False)
+
+    __table_args__ = (CheckConstraint("amount > 0", name="ck_capital_withdrawals_amount_positive"),)
+
+
 class BreakerEvent(Base):
     """Circuit breaker-ийн цонхны түүхий үйл явдал (LLD §15.2)."""
 

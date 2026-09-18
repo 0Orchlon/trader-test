@@ -34,6 +34,18 @@ class ClaudeMcpAdapter(BaseAdapter):
             for tool in self.source_tools()
         ]
 
+    def to_anthropic_tools(self) -> list[dict[str, Any]]:
+        """Messages API-ийн шууд дуудалтад (T-99, хувийн төсөл, MCP биш):
+        `input_schema` snake_case, `inputSchema` биш."""
+        return [
+            {
+                "name": tool["name"],
+                "description": tool["description"],
+                "input_schema": tool["input_schema"],
+            }
+            for tool in self.source_tools()
+        ]
+
     def tool_result_block(self, tool_use_id: str, envelope: dict) -> dict:
         """MCP-ийн `tool_result`. Envelope нь БҮТНЭЭР дотор нь орно."""
         return {

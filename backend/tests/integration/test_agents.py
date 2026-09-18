@@ -413,7 +413,7 @@ def test_adapters_never_hold_credentials():
 def test_the_default_router_exposes_every_v1_provider():
     router = default_router(error_threshold=3)
     ids = [p["id"] for p in router.to_json()["providers"]]
-    assert ids == ["claude-mcp", "openai-fc", "xai-fc", "local-fallback"]
+    assert ids == ["claude-mcp", "openai-fc", "xai-fc", "local-fc", "local-fallback"]
     assert router.active_id("research") == "claude-mcp"
 
 

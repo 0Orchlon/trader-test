@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
-COMPOSE = REPO / "docker-compose.dev.yml"
+COMPOSE = REPO / "docker-compose.yml"
 
 
 def _services() -> dict:
@@ -34,9 +34,17 @@ def test_backend_and_frontend_dockerfiles_exist() -> None:
 
 
 def test_backend_service_is_built_from_this_repo() -> None:
+    """Build context нь РЕПОГИЙН ҮНДЭС байх ёстой (frontend-тэй ижил зарчим):
+
+    `app.agents.contract.load()` нь `contracts/tool-contract.v1.yaml`-ыг эх
+    сурвалж гэж уншдаг тул зөвхөн `./backend`-ийг context болговол энэ файл
+    image-д ОГТ ордоггүй — эхний бодит tool dispatch (research loop) дээр
+    `FileNotFoundError`-оор унадаг байсныг эндээс олж засав.
+    """
     backend = _services()["backend"]
     assert "image" not in backend or "build" in backend
-    assert backend["build"]["context"] in ("./backend", "backend")
+    assert backend["build"]["context"] in (".", "./")
+    assert backend["build"]["dockerfile"] == "backend/Dockerfile"
 
 
 def test_frontend_static_is_baked_into_the_image_not_bind_mounted() -> None:

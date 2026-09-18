@@ -134,7 +134,13 @@ class AlpacaAdapter:
 
     def _client_or_new(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0)
+            # ponytail: netcapital-ийн корпорацийн proxy нь paper-ийн
+            # гадагш гарах HTTPS-ийг TLS inspection хийдэг тул PAPER
+            # горимд verify унтраасан (dev-ийн зам БОЛОХ). LIVE горимд
+            # ХЭЗЭЭ Ч унтраахгүй — жинхэнэ мөнгөтэй холбогдох тул MITM
+            # эрсдэлийг зогсоох ёстой. Proxy-г уншсан бол унтраа.
+            verify = self.mode is not TradingMode.PAPER
+            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0, verify=verify)
         return self._client
 
     async def aclose(self) -> None:
@@ -184,6 +190,13 @@ class AlpacaAdapter:
             trading_blocked=bool(raw.get("trading_blocked", False)),
         )
         return self._envelope(account)
+
+    async def get_clock(self) -> dict:
+        """Зах зээл нээлттэй эсэх (`GET /v2/clock`). Risk/Tool contract-д
+        БАЙХГҮЙ — зөвхөн `agents/runner.py`-ийн зардал хэмнэх урьдчилсан
+        шалгалт, LLM-д харагдахгүй."""
+        raw = await self._read("/v2/clock")
+        return {"is_open": bool(raw.get("is_open", False))}
 
     async def get_positions(self) -> Envelope[list[Position]]:
         raw = await self._read("/v2/positions")
@@ -399,4 +412,12 @@ class AlpacaAdapter:
             return self._ws_connect(url)
         from websockets.asyncio.client import connect  # pragma: no cover - сүлжээ
 
+        # ponytail: REST-тэй ижил шалтгаанаар PAPER-т verify унтраана.
+        if self.mode is TradingMode.PAPER:
+            import ssl
+
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return connect(url, ssl=ctx)  # pragma: no cover - сүлжээ
         return connect(url)  # pragma: no cover - сүлжээ

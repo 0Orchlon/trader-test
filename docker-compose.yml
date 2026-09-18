@@ -5,8 +5,8 @@
 # хавтаснаас mount хийгддэг байсан тул байршуулалт нь ажлын хавтас устмагц
 # унадаг (U-2), backend нь огт байршуулагдахгүй (U-4) байв.
 #
-# Порт: 8090/5181 (Hefesto) болон бусад локал төслүүдийн 15432/18080-той
-# мөргөлдөхгүйгээр сонгосон.
+# Порт: 35432/36379/38000/38080 — netfinopsv7 (15432/18080-18084/28080-28084)
+# болон бусад локал төслүүдийн порттой мөргөлдөхгүйгээр сонгосон.
 services:
   postgres:
     image: postgres:16-alpine
@@ -15,7 +15,7 @@ services:
       POSTGRES_PASSWORD: p3
       POSTGRES_DB: p3
     ports:
-      - "25432:5432"
+      - "35432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U p3 -d p3"]
       interval: 2s
@@ -25,7 +25,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "26379:6379"
+      - "36379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -40,7 +40,8 @@ services:
   # Alpaca-ийн түлхүүр зөвхөн орчноос — репод ХЭЗЭЭ Ч орохгүй.
   backend:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     env_file:
       - path: ./backend/.env
         required: false
@@ -51,7 +52,7 @@ services:
       ALPACA_API_KEY: ${ALPACA_API_KEY:-}
       ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
     ports:
-      - "28000:8000"
+      - "38000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,7 +74,7 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     ports:
-      - "18080:80"
+      - "38080:80"
     environment:
       BACKEND: ${BACKEND:-backend:8000}
       # nginx-ийн `$host`, `$uri` зэргийг envsubst иддэг — зөвхөн BACKEND.

@@ -346,7 +346,12 @@ async def propose_order(ctx: ToolContext, args: dict) -> dict:
     # 3) Risk Agent.
     try:
         risk_ctx = await build_risk_context(
-            ctx.broker, ctx.settings, state.state, symbol, idempotency_key=ctx.session_id
+            ctx.broker,
+            ctx.settings,
+            state.state,
+            symbol,
+            idempotency_key=ctx.session_id,
+            session=ctx.session,
         )
     except BrokerUnavailable as exc:
         raise ToolError("unreachable", str(exc)) from exc

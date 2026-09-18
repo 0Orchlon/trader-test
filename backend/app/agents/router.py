@@ -170,12 +170,13 @@ def default_router(*, error_threshold: int) -> ProviderRouter:
     """v1-ийн тохиргоо. Шинэ provider нэмэх нь ЭНД нэг мөр."""
     from app.agents.adapters.claude_mcp import ClaudeMcpAdapter
     from app.agents.adapters.local_readonly import LocalReadOnlyAdapter
-    from app.agents.adapters.openai_fc import OpenAiFcAdapter, XaiFcAdapter
+    from app.agents.adapters.openai_fc import LocalFcAdapter, OpenAiFcAdapter, XaiFcAdapter
 
     adapters = [
         ClaudeMcpAdapter(),
         OpenAiFcAdapter(),
         XaiFcAdapter(),
+        LocalFcAdapter(),
         LocalReadOnlyAdapter(),
     ]
     return ProviderRouter(
