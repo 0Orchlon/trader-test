@@ -72,10 +72,25 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str | None = None
     CLAUDE_MODEL: str = "claude-opus-5"
     LOCAL_MODEL_URL: str | None = None
-    LOCAL_MODEL_NAME: str = "llama3.1"
-    RESEARCH_SYMBOLS: str = "AAPL,MSFT,SPY"
+    LOCAL_MODEL_NAME: str = "qwen3:4b-instruct"
+    RESEARCH_SYMBOLS: str = (
+        "AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,SPY,QQQ,AMD,"
+        "NFLX,JPM,V,MA,DIS,BABA,COIN,PLTR,"
+        "BTC/USD,ETH/USD,SOL/USD,XRP/USD,DOGE/USD,LTC/USD,AVAX/USD,LINK/USD,AAVE/USD,UNI/USD,"
+        "ADA/USD,DOT/USD,BCH/USD,SHIB/USD,PEPE/USD"
+    )
     RESEARCH_INTERVAL_SECONDS: int = 300
     RESEARCH_MAX_TOOL_TURNS: int = 6
+    EQUITY_SNAPSHOT_SECONDS: int = 60
+
+    # --- детерминистик exit manager (T-99) ---
+    STOP_LOSS_PCT: Decimal = Decimal("2.5")
+    TAKE_PROFIT_PCT: Decimal = Decimal("6.0")
+    MAX_HOLD_HOURS: int = 48
+    EXIT_CHECK_SECONDS: int = 60
+
+    # --- гар (operator) позицийн ашигтай болмогц авто-хаалт toggle (T-99) ---
+    MANUAL_TAKE_PROFIT_CHECK_SECONDS: int = 60
 
     # --- дэд бүтэц ---
     DATABASE_URL: str = "sqlite+aiosqlite:///./p3.db"

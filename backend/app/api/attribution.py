@@ -19,6 +19,30 @@ from app.broker.models import OPEN_ORDER_STATUSES, Origin, OrderStatus, Position
 FILLED_STATUSES = (OrderStatus.FILLED.value, OrderStatus.PARTIALLY_FILLED.value)
 OPEN_STATUSES = tuple(s.value for s in OPEN_ORDER_STATUSES)
 
+#: Ширхэг ЦААШИД ХӨДӨЛӨХГҮЙ төлөвүүд. Бусад БҮГД нь «амьд».
+TERMINAL_STATUSES = (
+    OrderStatus.REJECTED,
+    OrderStatus.FILLED,
+    OrderStatus.CANCELED,
+    OrderStatus.EXPIRED,
+    # `failed` нь энд: EOD тулгалт (`reconcile.LOCAL_OPEN_STATUSES`) түүнийг
+    # broker-ийн үнэнээр ЗАСНА. Амьд гэж үзвэл хүрээгүй submit-ийн мөр тухайн
+    # symbol-ын хаалтыг ҮҮРД хориглоно.
+    OrderStatus.FAILED,
+)
+#: Хаалтын хаалга УРВУУГААР бодогдоно: enum-д шинэ төлөв нэмэгдвэл анхдагчаар
+#: «амьд» тул хоригдоно — чимээгүй хамгаалалтгүй үлдэхгүй (`pending_risk` нь
+#: `OPEN_ORDER_STATUSES`-д байхгүй тул яг ингэж алдагдсан).
+LIVE_STATUSES = tuple(s.value for s in OrderStatus if s not in TERMINAL_STATUSES)
+
+
+def _normalize(symbol: str) -> str:
+    """Alpaca-ийн `/v2/positions` нь crypto symbol-оос `/`-г хасдаг
+    (`BTC/USD` → `BTCUSD`), харин order/quote тал `/`-тэй хэвээр (T-99,
+    эмпирик ажиглалт) — харьцуулахад л normalize хийнэ, харуулах утгыг
+    ХЭЗЭЭ Ч өөрчлөхгүй (AC-1-ийн сүнс)."""
+    return symbol.replace("/", "")
+
 
 @dataclass(frozen=True, slots=True)
 class Attribution:
@@ -45,10 +69,15 @@ async def position_origins(session: AsyncSession) -> dict[str, Attribution]:
 
     by_symbol: dict[str, list[models.Order]] = {}
     for row in rows:
-        by_symbol.setdefault(row.symbol, []).append(row)
+        by_symbol.setdefault(_normalize(row.symbol), []).append(row)
 
     out: dict[str, Attribution] = {}
     for symbol, orders in by_symbol.items():
+        # Локал order-ууд тэглэгдсэн бол (buy − sell = 0) энэ symbol дээрх позиц
+        # МАНАЙХ БИШ: хуучин хаагдсан fill ирээдүйн позицийг эзэмшихгүй —
+        # `external`-д унана (LLD D-1).
+        if sum((o.filled_qty if o.side == "buy" else -o.filled_qty) for o in orders) == 0:
+            continue
         latest = max(orders, key=lambda o: (o.filled_at or o.submitted_at))
         newest_first = (latest.origin, latest.origin_detail)
         pairs = [newest_first] + sorted(
@@ -65,7 +94,7 @@ async def position_origins(session: AsyncSession) -> dict[str, Attribution]:
 
 
 def attribute(position: Position, origins: dict[str, Attribution]) -> Attribution:
-    return origins.get(position.symbol, EXTERNAL)
+    return origins.get(_normalize(position.symbol), EXTERNAL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +134,7 @@ async def build_groups(
     for decision in decisions:
         symbol = (decision.proposal or {}).get("symbol")
         if symbol:
-            last_decision[symbol] = decision
+            last_decision[_normalize(symbol)] = decision
 
     # (origin, origin_detail) → symbol → SymbolRow-ийн түүхий хэсгүүд
     grouped: dict[tuple[str, str | None], dict[str, dict]] = {}
@@ -124,7 +153,7 @@ async def build_groups(
         )
 
     def mixed(symbol: str) -> bool:
-        return symbol in origins and origins[symbol].mixed
+        return _normalize(symbol) in origins and origins[_normalize(symbol)].mixed
 
     for order in open_orders:
         entry = slot(order.origin, order.origin_detail, order.symbol)
@@ -132,7 +161,7 @@ async def build_groups(
         entry["origin_mixed"] = mixed(order.symbol)
 
     for position in positions:
-        attribution = origins.get(position.symbol, EXTERNAL)
+        attribution = origins.get(_normalize(position.symbol), EXTERNAL)
         # Холимог symbol нь ХОЛБОГДОХ БҮХ картад гарна — далдлахгүй (LLD §16.4).
         # Позицийн ширхэг/дүн нь давхардана: задаргаа биш, оролцоо гэсэн утгатай
         # тул `origin_mixed` тэмдэг заавал хамт явна.
@@ -154,10 +183,14 @@ async def build_groups(
                 open_order_count=data["open_order_count"],
                 origin_mixed=data["origin_mixed"],
                 last_decision_at=(
-                    last_decision[symbol].created_at if symbol in last_decision else None
+                    last_decision[_normalize(symbol)].created_at
+                    if _normalize(symbol) in last_decision
+                    else None
                 ),
                 last_decision_id=(
-                    str(last_decision[symbol].id) if symbol in last_decision else None
+                    str(last_decision[_normalize(symbol)].id)
+                    if _normalize(symbol) in last_decision
+                    else None
                 ),
             )
             for symbol, data in sorted(symbols.items())

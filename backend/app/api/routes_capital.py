@@ -85,3 +85,25 @@ async def get_capital_summary(request: Request, machine: StateMachineDep, sessio
         source=current_source(request),
         system_state=state.state,
     )
+
+
+@router.get("/capital/limits", operation_id="getCapitalLimits")
+async def get_capital_limits(request: Request, machine: StateMachineDep):
+    """Settings-ийн хэмжигдэхүүн шууд буулгах — Risk Agent-ийн тооцоолол БИШ
+
+    (`risk/rules.py` хэвээрээ цорын ганц эх сурвалж). Operator дэлгэц дээр
+    "хэдэн хувь exposure үлдсэн бэ" гэдгийг order илгээхгүйгээр харуулахад
+    ашиглагдана.
+    """
+    limits = request.app.state.settings
+    state = await machine.current()
+    return envelope(
+        {
+            "max_total_exposure_pct": str(limits.MAX_TOTAL_EXPOSURE_PCT),
+            "max_position_pct": str(limits.MAX_POSITION_PCT),
+            "max_order_notional": money_field(limits.MAX_ORDER_NOTIONAL),
+            "daily_loss_limit": money_field(limits.DAILY_LOSS_LIMIT),
+        },
+        source=current_source(request),
+        system_state=state.state,
+    )

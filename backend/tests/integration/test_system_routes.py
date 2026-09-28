@@ -247,3 +247,50 @@ async def test_wind_down_schedules_a_job_at_the_deadline(client, app):
     assert isinstance(job["trigger"], DateTrigger)
     assert to_iso(job["trigger"].run_date) == body["wind_down_deadline"]
     assert job["replace_existing"] is True
+
+
+async def test_reconcile_now_repairs_a_stale_order_via_the_route(
+    client, db_session, broker, seeded_orders
+):
+    """`POST /system/reconcile-now` — `reconcile_eod`-той ЯГ ижил логик, гэхдээ
+    хуваарь хүлээхгүй. `test_ingest_reconcile.py::test_reconcile_adopts_the_broker_status`-
+    тай ижил суурь, зөвхөн HTTP route-оор дуудсан нь ялгаа."""
+    from dataclasses import replace
+
+    from app.broker.models import OrderStatus
+    from tests.fakes import broker_order
+
+    remote = replace(
+        broker_order("p3-seed-manual", symbol="MSFT"),
+        status=OrderStatus.FILLED,
+        filled_qty=Decimal("12"),
+    )
+    broker.open_orders = [remote]
+    local = [o for o in seeded_orders if o.client_order_id == "p3-seed-manual"][0]
+
+    response = await client.post("/api/v1/system/reconcile-now")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["drift_count"] == 1
+    assert body["drifts"][0]["kind"] == "status_mismatch"
+    assert body["breaker_tripped"] is False
+
+    await db_session.refresh(local)
+    assert local.status == "filled"
+    assert local.filled_qty == Decimal("12")
+
+
+async def test_reconcile_now_with_no_drift_reports_zero(client, broker, seeded_orders):
+    from dataclasses import replace
+
+    from app.broker.models import OrderStatus
+    from tests.fakes import broker_order
+
+    remote = broker_order("p3-seed-manual", symbol="MSFT")
+    local = [o for o in seeded_orders if o.client_order_id == "p3-seed-manual"][0]
+    remote = replace(remote, filled_qty=local.filled_qty, status=OrderStatus(local.status))
+    broker.open_orders = [remote]
+
+    body = (await client.post("/api/v1/system/reconcile-now")).json()
+    assert body["drift_count"] == 0
+    assert body["drifts"] == []

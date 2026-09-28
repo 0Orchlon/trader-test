@@ -1,8 +1,9 @@
 /**
- * Системийн төлөв, горим, staleness — НЭГ эх сурвалж (LLD §16.1, §16.7).
+ * System state, mode, and staleness — ONE source of truth (LLD §16.1, §16.7).
  *
- * REST нь үнэний эх (TanStack Query). WS нь зөвхөн invalidation: мессеж
- * ирэхэд query дахин татагдана. WS-ээс UI-ийн төлөвийг ШУУД угсрахгүй.
+ * REST is the source of truth (TanStack Query). WS is invalidation only:
+ * a message arriving re-fetches the query. UI state is never built
+ * directly from WS.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -10,7 +11,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { connect, type BusMessage } from '@/lib/ws';
 
-/** Сервер `HEARTBEAT_SECONDS` тутам мэдэгдэнэ; 5s чимээгүй бол stale. */
+/** The server announces every `HEARTBEAT_SECONDS`; 5s of silence = stale. */
 export const STALE_AFTER_MS = 5_000;
 const TICK_MS = 1_000;
 
@@ -20,8 +21,8 @@ export function useSystemState() {
   return useQuery({
     queryKey: systemStateKey,
     queryFn: api.systemState,
-    // Wind-down-ийн тоолуур секунд тутам биш, WS-ээр шинэчлэгдэнэ; энэ нь
-    // WS бүрэн унасан үеийн нөөц зам.
+    // The wind-down countdown isn't per-second here, it updates via WS;
+    // this is the fallback path for when WS is fully down.
     refetchInterval: 15_000,
   });
 }
@@ -31,10 +32,11 @@ export function useHealth() {
 }
 
 /**
- * WS-ийн чимээгүй байдлыг хэмжинэ (AC-2).
+ * Measures WS silence (AC-2).
  *
- * `onclose`-ыг ХҮЛЭЭХГҮЙ: сүлжээ унтарсан ч `onclose` ирэхгүй тохиолдол нь
- * хамгийн аюултай хэлбэр. Тиймээс сүүлийн МЕССЕЖИЙН цагаар шийднэ.
+ * Does NOT wait on `onclose`: the network dropping without `onclose`
+ * ever arriving is the most dangerous case. So this decides from the
+ * timestamp of the last MESSAGE instead.
  */
 export function useLiveSocket() {
   const queryClient = useQueryClient();
@@ -47,9 +49,10 @@ export function useLiveSocket() {
       lastMessageAt.current = Date.now();
       setLastSeen(new Date().toISOString());
       const channel = message.channel;
-      // Heartbeat нь «холболт амьд» гэсэн үг, «төлөв өөрчлөгдсөн» гэсэн үг
-      // БИШ. Түүнийг invalidation гэж үзвэл сул таб бүр минутад 30 удаа
-      // `GET /system/state` (тэр бүр нь broker-ийн `get_account`) татна (N-2).
+      // Heartbeat means "connection alive", NOT "state changed". Treating
+      // it as invalidation would make every idle tab fetch
+      // `GET /system/state` (which itself calls the broker's
+      // `get_account`) 30 times a minute (N-2).
       if (channel === 'system' && message.payload?.event !== 'heartbeat') {
         void queryClient.invalidateQueries({ queryKey: systemStateKey });
         void queryClient.invalidateQueries({ queryKey: ['providers'] });
@@ -62,6 +65,17 @@ export function useLiveSocket() {
       if (channel === 'agent-decisions') {
         void queryClient.invalidateQueries({ queryKey: ['decisions'] });
         void queryClient.invalidateQueries({ queryKey: ['approvals'] });
+      }
+      // Live price tick (T-99, personal project) — same invalidation
+      // pattern as orders/decisions above, not a source of UI state
+      // (see lib/ws.ts). Refetches bars/quote as soon as a trade prints,
+      // instead of waiting for the next REST poll interval.
+      if (channel.startsWith('ticks:')) {
+        const symbol = message.payload?.symbol;
+        if (typeof symbol === 'string') {
+          void queryClient.invalidateQueries({ queryKey: ['bars', symbol] });
+          void queryClient.invalidateQueries({ queryKey: ['quote', symbol] });
+        }
       }
     };
     const disconnect = connect({ onMessage: handle });

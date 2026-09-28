@@ -162,6 +162,12 @@ async def post_approve(
         actor=OPERATOR,
     )
 
+    # Хүн зөвшөөрсөн шийдвэр `awaiting_approval` дээр үүрд үлдэхгүй.
+    decision = await session.get(models.AgentDecision, row.decision_id) if row.decision_id else None
+    if decision is not None:
+        decision.outcome = "executed"
+        decision.order_id = order.id
+
     row.state = APPROVED
     row.version += 1
     row.resolved_at = now_utc()

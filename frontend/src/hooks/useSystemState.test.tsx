@@ -1,10 +1,11 @@
 /**
- * N-2 — heartbeat нь REST-ийг дахин татахгүй.
+ * N-2 — heartbeat does not re-fetch REST.
  *
- * `system` сувгийн heartbeat нь `HEARTBEAT_SECONDS` (анхдагч 2s) тутам ирдэг.
- * Түүнийг invalidation гэж үзвэл сул зогсож буй таб бүр минутад 30 удаа
- * `GET /system/state` татна — тэр бүр нь broker-ийн `get_account`. Heartbeat
- * нь «холболт амьд» гэсэн үг, «төлөв өөрчлөгдсөн» гэсэн үг БИШ.
+ * The `system` channel's heartbeat arrives every `HEARTBEAT_SECONDS`
+ * (default 2s). Treating it as invalidation would make every idle tab
+ * fetch `GET /system/state` — which itself calls the broker's
+ * `get_account` — 30 times a minute. Heartbeat means "connection alive",
+ * NOT "state changed".
  */
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
@@ -40,15 +41,22 @@ function setup() {
 }
 
 describe('useLiveSocket (N-2)', () => {
-  it('heartbeat нь query-г дахин татахгүй', () => {
+  it('heartbeat does not re-fetch the query', () => {
     const { invalidate, send } = setup();
     send({ channel: 'system', payload: { event: 'heartbeat', ts: '2026-09-16T14:30:00Z' } });
     expect(invalidate).not.toHaveBeenCalled();
   });
 
-  it('бодит системийн үйл явдал нь татна', () => {
+  it('a real system event does re-fetch', () => {
     const { invalidate, send } = setup();
     send({ channel: 'system', payload: { event: 'state_changed', ts: '2026-09-16T14:30:00Z' } });
     expect(invalidate).toHaveBeenCalled();
+  });
+
+  it('a tick invalidates bars and quote for that symbol only', () => {
+    const { invalidate, send } = setup();
+    send({ channel: 'ticks:BTCUSD', payload: { event: 'tick', symbol: 'BTCUSD', price: '84123.45' } });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['bars', 'BTCUSD'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['quote', 'BTCUSD'] });
   });
 });

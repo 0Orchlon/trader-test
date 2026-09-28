@@ -5,6 +5,7 @@ LLD §7: Alpaca-ийн хариу нь домэйн модель рүү ЗӨВХ
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 import httpx
@@ -81,6 +82,38 @@ async def test_quote_last_comes_from_latest_trade_not_from_mid():
     assert env.data.ask == Decimal("221.50")
     # mid нь 221.40 байх байсан — ТООЦООЛОХГҮЙ, Alpaca-ийн сүүлийн арилжаа.
     assert env.data.last == Decimal("221.44")
+
+
+async def test_a_fresh_quote_over_an_hours_old_trade_is_stale():
+    """Stop/target нь `last` = сүүлийн ХЭЛЦЭЛ-ийн үнээр буудна. Нимгэн ticker
+    дээр market maker quote-оо шинэчилсээр байхад хэлцэл хэвлэгдэхгүй байж
+    болно — quote-ын нас л шалгавал хуучирсан үнээр MARKET гарна."""
+    from app.util.time import now_utc, to_iso
+
+    now = now_utc()
+    payload = {
+        "symbol": "THIN",
+        "latestQuote": {"bp": "10.00", "ap": "10.20", "t": to_iso(now)},
+        "latestTrade": {"p": "10.10", "t": to_iso(now - timedelta(hours=2))},
+    }
+    adapter = _adapter(lambda r: httpx.Response(200, json=payload))
+    env = await adapter.get_quote("THIN")
+    assert env.stale is True
+
+
+async def test_open_orders_ask_for_more_than_alpacas_default_page():
+    """`exits.py` үүнийг давхар-зарахаас хамгаалах гарцаа болгон ашиглана.
+    Alpaca анхдагчаар 50 мөр буцаадаг, pagination байхгүй — таслагдсан
+    жагсаалт нь чимээгүй унтарсан хамгаалалт."""
+    seen = {}
+
+    def handler(request):
+        seen.update(request.url.params)
+        return httpx.Response(200, json=[])
+
+    adapter = _adapter(handler)
+    await adapter.get_open_orders()
+    assert int(seen["limit"]) >= 500
 
 
 async def test_missing_trade_is_an_error_not_a_guessed_price():
@@ -188,3 +221,88 @@ async def test_rate_limit_429_is_an_outage_not_an_order_rejection():
     adapter = _adapter(lambda r: httpx.Response(429, json={"message": "too many requests"}))
     with pytest.raises(BrokerUnavailable):
         await adapter.submit_order(_order())
+
+
+# --- статус буулгалт: танихгүй статус нь ТЕРМИНАЛ БИШ ---
+
+ORDER_JSON = {
+    "id": "brk-1",
+    "client_order_id": "p3-live-1",
+    "symbol": "AAPL",
+    "side": "buy",
+    "qty": "10",
+    "filled_qty": "0",
+    "type": "market",
+    "time_in_force": "day",
+    "submitted_at": "2026-09-16T14:30:00Z",
+}
+
+
+@pytest.mark.parametrize(
+    "status", ["pending_cancel", "pending_replace", "stopped", "calculated", "нэрлээгүй_шинэ"]
+)
+async def test_an_unmapped_status_never_makes_a_live_order_look_dead(status):
+    """`failed` нь `OPEN_STATUSES`-д байхгүй тул exits-ийн давхар-зарах хаалга
+    тэр symbol-ыг хамрахаа болино — амьд order дээр нэмж зарна."""
+    from app.api.attribution import LIVE_STATUSES
+    from app.broker.models import OrderStatus
+
+    adapter = _adapter(lambda r: httpx.Response(200, json=[{**ORDER_JSON, "status": status}]))
+    [order] = (await adapter.get_open_orders()).data
+    assert order.status is not OrderStatus.FAILED
+    assert order.status.value in LIVE_STATUSES
+
+
+async def test_a_trade_update_with_an_unmapped_status_is_not_terminal_either():
+    from app.api.attribution import LIVE_STATUSES
+
+    adapter = _adapter(lambda r: httpx.Response(200, json={}))
+    update = adapter.map_trade_update(
+        {"event": "pending_cancel", "order": {**ORDER_JSON, "status": "pending_cancel"}}
+    )
+    assert update.status.value in LIVE_STATUSES
+
+
+# --- терминал order-ыг нэрээр нь асуух зам (тулгалтын үндэс) ---
+
+
+async def test_get_order_by_client_id_sees_a_filled_order():
+    """`status=open` жагсаалтад БАЙХГҮЙ order — зөвхөн энэ замаар олдоно."""
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        seen.update(request.url.params)
+        return httpx.Response(200, json={**ORDER_JSON, "status": "filled", "filled_qty": "10"})
+
+    adapter = _adapter(handler)
+    order = await adapter.get_order_by_client_id("p3-live-1")
+    assert seen["path"].endswith(":by_client_order_id")
+    assert seen["client_order_id"] == "p3-live-1"
+    assert order is not None and order.filled_qty == Decimal("10")
+
+
+async def test_an_unknown_client_order_id_is_none_not_an_outage():
+    """404 = Alpaca ХАРИУЛСАН. Retry ч, `api_error_rate` ч хөдлөхгүй."""
+    calls = {"n": 0}
+    reported: list[bool] = []
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(404, json={"message": "order not found"})
+
+    adapter = _adapter(handler)
+
+    async def reporter(ok: bool) -> None:
+        reported.append(ok)
+
+    adapter.bind_api_reporter(reporter)
+    assert await adapter.get_order_by_client_id("p3-ghost") is None
+    assert calls["n"] == 1
+    assert reported == [True]
+
+
+async def test_a_lookup_outage_is_still_an_outage():
+    adapter = _adapter(lambda r: httpx.Response(500, text="boom"))
+    with pytest.raises(BrokerUnavailable):
+        await adapter.get_order_by_client_id("p3-live-1")

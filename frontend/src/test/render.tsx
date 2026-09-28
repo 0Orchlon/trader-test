@@ -1,4 +1,4 @@
-/** Тестийн нийтлэг угсралт — Mantine + Query + Router. */
+/** Shared test scaffolding — Mantine + Query + Router. */
 import type { ReactElement, ReactNode } from 'react';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -26,7 +26,7 @@ export function renderWithProviders(
   return { client, ...render(ui, { wrapper: Wrapper, ...options }) };
 }
 
-/** `fetch`-ийг зам тус бүрээр орлуулна. Сүлжээнд ХЭЗЭЭ Ч хүрэхгүй. */
+/** Replaces `fetch` per route. NEVER touches the real network. */
 export function mockFetch(routes: Record<string, { status?: number; body: unknown }>) {
   return async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString();

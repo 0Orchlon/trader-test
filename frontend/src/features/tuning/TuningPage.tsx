@@ -1,11 +1,12 @@
 /**
  * Auto-Tuning Panel (T-34, LLD §16.6, AC-22…AC-24).
  *
- * Параметр, муж, одоогийн утга, түүх, walk-forward үр дүн. `promote` нь
- * хоёр шаттай баталгаажуулалттай.
+ * Parameter, bounds, current value, history, walk-forward results.
+ * `promote` requires two-step confirmation.
  *
- * **Муж засах талбар ЭНД БАЙХГҮЙ** (AC-24): муж бол бодлого, түүнийг
- * UI-аас засах нь SPEC_APPROVE-ийн хаалгыг тойрно. Муж өөрчлөх = deploy.
+ * **No bounds-editing field exists here** (AC-24): bounds are policy —
+ * editing them from the UI would go around SPEC_APPROVE's gate. Changing
+ * bounds means a deploy.
  */
 import { useState } from 'react';
 import {
@@ -26,7 +27,8 @@ import { IconAlertTriangle, IconArrowUp } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { ApiError, api } from '@/lib/api';
-import { formatUtc } from '@/lib/money';
+import { formatLocalDateTimeWithUtc } from '@/lib/money';
+import { Num } from '@/components/Num';
 
 export function TuningPage() {
   const queryClient = useQueryClient();
@@ -58,21 +60,22 @@ export function TuningPage() {
   return (
     <Stack gap="md">
       <Group justify="space-between">
-        <Title order={3}>Авто-тохируулга</Title>
+        <Title order={3}>Auto-tuning</Title>
         <Button
           leftSection={<IconArrowUp size={16} />}
           disabled={selected.length === 0 || promote.isPending}
           data-testid="tuning-promote"
           onClick={() => promote.mutate(undefined)}
         >
-          LIVE рүү дэвшүүлэх ({selected.length})
+          Promote to LIVE ({selected.length})
         </Button>
       </Group>
 
       <Alert color="blue" data-testid="tuning-policy">
-        Муж нь config-оос ирнэ — энэ дэлгэцээс ЗАСАХ боломжгүй. Муж өөрчлөх нь deploy
-        болон code review-ээр л явна. Автомат өөрчлөлт бүр `paper` дээр; `live` болох
-        цорын ганц зам нь энэ дэлгэцийн дэвшүүлэх товч + баталгаажуулалт.
+        Bounds come from config — they cannot be EDITED from this screen. Changing
+        bounds only happens through a deploy and code review. Every automatic
+        change is on `paper`; the ONLY path to `live` is this screen's promote
+        button plus confirmation.
       </Alert>
 
       {parameters.map((p) => (
@@ -81,30 +84,30 @@ export function TuningPage() {
             <Group gap="sm">
               <Text fw={700}>{p.name}</Text>
               <Badge variant="light" data-testid="tuning-current">
-                одоо: {p.current_value}
+                current: <Num span>{p.current_value}</Num>
               </Badge>
               <Badge color={p.applies_to === 'live' ? 'red' : 'blue'} data-testid="tuning-applies">
-                {p.applies_to}
+                <Num span>{p.applies_to}</Num>
               </Badge>
             </Group>
-            <Text size="xs" c="dimmed" data-testid="tuning-bounds">
-              муж [{p.bounds.min} … {p.bounds.max}] алхам {p.bounds.step}
-            </Text>
+            <Num size="xs" c="dimmed" data-testid="tuning-bounds">
+              bounds [{p.bounds.min} … {p.bounds.max}] step {p.bounds.step}
+            </Num>
           </Group>
 
           {(p.history ?? []).length === 0 ? (
             <Text size="sm" c="dimmed">
-              Өөрчлөлтийн түүх алга — утга нь config-ийн анхдагч.
+              No change history — value is config's default.
             </Text>
           ) : (
             <Table data-testid="tuning-history">
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th />
-                  <Table.Th>Хуучин → шинэ</Table.Th>
-                  <Table.Th>Батласан</Table.Th>
+                  <Table.Th>Old → new</Table.Th>
+                  <Table.Th>Approved by</Table.Th>
                   <Table.Th>Walk-forward</Table.Th>
-                  <Table.Th>Цаг</Table.Th>
+                  <Table.Th>Time</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -125,7 +128,7 @@ export function TuningPage() {
                       />
                     </Table.Td>
                     <Table.Td>
-                      {h.old_value} → <b>{h.new_value}</b>
+                      <Num span>{h.old_value}</Num> → <Num span fw={700}>{h.new_value}</Num>
                     </Table.Td>
                     <Table.Td>
                       <Badge color={h.approved_by === 'operator' ? 'green' : 'gray'} variant="light">
@@ -133,13 +136,13 @@ export function TuningPage() {
                       </Badge>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs">
+                      <Num size="xs">
                         {h.walk_forward.folds} fold · in {h.walk_forward.in_sample_metric} · out{' '}
                         {h.walk_forward.out_of_sample_metric}
-                      </Text>
+                      </Num>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs">{formatUtc(h.changed_at)}</Text>
+                      <Num size="xs">{formatLocalDateTimeWithUtc(h.changed_at)}</Num>
                     </Table.Td>
                   </Table.Tr>
                 ))}
@@ -152,27 +155,27 @@ export function TuningPage() {
       <Modal
         opened={confirmation !== null}
         onClose={() => setConfirmation(null)}
-        title="LIVE рүү дэвшүүлэх"
+        title="Promote to LIVE"
         data-testid="tuning-confirm-modal"
       >
         <Stack gap="md">
           <Text data-testid="tuning-confirm-prompt">{confirmation?.prompt}</Text>
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setConfirmation(null)}>
-              Болих
+              Cancel
             </Button>
             <Button
               color="red"
               data-testid="tuning-confirm-accept"
               onClick={() => confirmation && promote.mutate(confirmation.token)}
             >
-              Дэвшүүлэх
+              Promote
             </Button>
           </Group>
         </Stack>
       </Modal>
 
-      <Modal opened={error !== null} onClose={() => setError(null)} title="Алдаа">
+      <Modal opened={error !== null} onClose={() => setError(null)} title="Error">
         <Alert color="red" icon={<IconAlertTriangle size={18} />} data-testid="tuning-error">
           {error}
         </Alert>

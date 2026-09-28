@@ -1,10 +1,10 @@
 /**
- * T-50 (675) — «Хэн юунд арилжаа хийж байна» (AC-29, AC-30).
+ * T-50 (675) — "Who is trading what" (AC-29, AC-30).
  *
- * Голууд:
- * - Мөр бүр origin шошготой.
- * - `external` позиц нь agent-ийн нэрээр ХЭЗЭЭ Ч харагдахгүй.
- * - Харагдацын symbol жагсаалт нь API-ийн буцаасантай ЯГ тэнцүү.
+ * Core points:
+ * - Every row is labeled with an origin.
+ * - An `external` position is NEVER shown under an agent's name.
+ * - The view's symbol list is EXACTLY what the API returned.
  */
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -21,7 +21,7 @@ function renderPage() {
 }
 
 describe('AttributionPage', () => {
-  it('origin тус бүрээр нэг карт', async () => {
+  it('one card per origin', async () => {
     renderPage();
     await waitFor(() => expect(screen.getAllByTestId('attribution-group')).toHaveLength(2));
     const origins = screen
@@ -30,24 +30,24 @@ describe('AttributionPage', () => {
     expect(origins).toEqual(['research_agent', 'external']);
   });
 
-  it('AI-ийн картад provider/model харагдана', async () => {
+  it("shows provider/model on the AI's card", async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText(/claude-mcp\/claude-opus-5/)).toBeInTheDocument());
   });
 
-  it('external позиц нь agent-ийн нэрээр ХЭЗЭЭ Ч харагдахгүй', async () => {
+  it('an external position is NEVER shown under an agent name', async () => {
     renderPage();
     await waitFor(() => expect(screen.getAllByTestId('attribution-group')).toHaveLength(2));
     const external = screen
       .getAllByTestId('attribution-group')
       .find((node) => node.getAttribute('data-origin') === 'external')!;
     expect(external).toHaveTextContent('TSLA');
-    expect(external).toHaveTextContent('локал бичлэггүй');
+    expect(external).toHaveTextContent('no local record');
     expect(external).not.toHaveTextContent('claude');
-    expect(external).not.toHaveTextContent('AI судалгааны agent');
+    expect(external).not.toHaveTextContent('AI research agent');
   });
 
-  it('symbol жагсаалт нь API-ийн буцаасантай тэнцүү', async () => {
+  it("the symbol list equals the API's response", async () => {
     renderPage();
     await waitFor(() => expect(screen.getAllByTestId('attribution-row')).toHaveLength(2));
     const shown = screen
@@ -57,19 +57,19 @@ describe('AttributionPage', () => {
     expect(shown.sort()).toEqual(expected.sort());
   });
 
-  it('позицтой symbol-д ширхэг ба зах зээлийн үнэ харагдана', async () => {
+  it('shows quantity and market value for a symbol with a position', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('$9,012.00')).toBeInTheDocument());
-    expect(screen.getByText('40 ш')).toBeInTheDocument();
+    expect(screen.getByText('40 shares')).toBeInTheDocument();
   });
 
-  it('шийдвэртэй мөрөөс «яагаад» холбоос гарна', async () => {
+  it('a decided row shows a "why" link', async () => {
     renderPage();
     await waitFor(() => expect(screen.getAllByTestId('why-link')).toHaveLength(1));
     expect(screen.getByTestId('why-link')).toHaveAttribute('href', '/decisions?symbol=AAPL');
   });
 
-  it('холимог origin нь БҮХ картад тэмдэгтэй харагдана (LLD §16.4)', async () => {
+  it('mixed origin is marked on EVERY card (LLD §16.4)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(mockFetch({ '/api/v1/attribution': { body: mixedAttribution } })),
@@ -83,13 +83,13 @@ describe('AttributionPage', () => {
     expect(screen.getAllByTestId('mixed-origin-badge')).toHaveLength(2);
   });
 
-  it('нэг origin-той symbol дээр холимог тэмдэг ГАРАХГҮЙ', async () => {
+  it('a single-origin symbol shows NO mixed badge', async () => {
     renderPage();
     await waitFor(() => expect(screen.getAllByTestId('attribution-row')).toHaveLength(2));
     expect(screen.queryByTestId('mixed-origin-badge')).toBeNull();
   });
 
-  it('хоосон үед таамаглахгүй, ил хэлнэ', async () => {
+  it('does not guess when empty, states it plainly', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(mockFetch({ '/api/v1/attribution': { body: { ...attribution, groups: [] } } })),

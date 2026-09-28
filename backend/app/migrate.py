@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.schema import CreateColumn
 
 from app import models  # noqa: F401  — метадата бүртгүүлэх
 from app.db import Base, init_engine
@@ -19,9 +21,34 @@ from app.db import Base, init_engine
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 
+def _add_missing_columns(conn) -> None:
+    """`create_all` нь БАЙГАА хүснэгтэд шинэ багана НЭМЭХГҮЙ.
+
+    Postgres-ийн `.sql` нь зөвхөн Postgres дээр ажилладаг тул хуучин SQLite
+    файл (анхдагч `DATABASE_URL`) дээр `orders.entry_price` мөнхөд дутуу
+    үлдэж байв. Тиймээс нэмэлтийг backend-ээс ХАМААРАХГҮЙ болгов: метадатад
+    байгаа ч хүснэгтэд байхгүй багана бүрийг энд нэмнэ.
+    """
+    inspector = inspect(conn)
+    tables = set(inspector.get_table_names())
+    preparer = conn.dialect.identifier_preparer
+    for table in Base.metadata.sorted_tables:
+        if table.name not in tables:
+            continue
+        existing = {c["name"] for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing:
+                continue
+            ddl = CreateColumn(column).compile(dialect=conn.dialect)
+            conn.execute(
+                text(f"ALTER TABLE {preparer.format_table(table)} ADD COLUMN {ddl}")
+            )
+
+
 async def apply_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_columns)
 
     if engine.url.get_backend_name() != "postgresql":
         return

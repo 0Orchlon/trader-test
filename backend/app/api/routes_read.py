@@ -5,17 +5,21 @@
 """
 from __future__ import annotations
 
+from datetime import timedelta
+from decimal import Decimal
+
 from fastapi import APIRouter, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import models
-from app.api.attribution import attribute, build_groups, position_origins
+from app.agents.runner import closed_trade_stats
+from app.api.attribution import _normalize, attribute, build_groups, position_origins
 from app.api.deps import SessionDep, StateMachineDep
 from app.api.envelope import envelope, money_field, qty_field
 from app.api.problem import problem
 from app.api.serializers import account_json, order_json, position_json
 from app.broker.models import BrokerUnavailable, Source
-from app.util.time import to_iso
+from app.util.time import now_utc, to_iso
 
 router = APIRouter()
 
@@ -85,6 +89,39 @@ async def get_account(request: Request, machine: StateMachineDep):
     )
 
 
+@router.get("/equity/history", operation_id="getEquityHistory")
+async def get_equity_history(
+    request: Request,
+    machine: StateMachineDep,
+    session: SessionDep,
+    minutes: int = Query(240, ge=1, le=10080),
+):
+    """Минут тутмын БОДИТ түүвэр (T-99, хувийн төсөл, LLD-д тусгаагүй).
+
+    `snapshot_equity` job-оос — интерполяци/тооцоолол БАЙХГҮЙ, зөвхөн
+    Alpaca-ийн `equity`-ийн тухайн агшны утга.
+    """
+    since = now_utc() - timedelta(minutes=minutes)
+    rows = (
+        await session.execute(
+            select(models.EquitySnapshot)
+            .where(models.EquitySnapshot.ts >= since)
+            .order_by(models.EquitySnapshot.ts)
+        )
+    ).scalars().all()
+    state = await machine.current()
+    return envelope(
+        {
+            "points": [
+                {"ts": to_iso(row.ts), "equity": money_field(row.equity), "cash": money_field(row.cash)}
+                for row in rows
+            ]
+        },
+        source=current_source(request),
+        system_state=state.state,
+    )
+
+
 @router.get("/positions", operation_id="getPositions")
 async def get_positions(request: Request, machine: StateMachineDep, session: SessionDep):
     try:
@@ -101,15 +138,26 @@ async def get_positions(request: Request, machine: StateMachineDep, session: Ses
     )
 
 
-@router.get("/market/quote/{symbol}", operation_id="getQuote")
+def _order_form_symbol(symbol: str, settings) -> str:
+    """Alpaca-ийн `/v2/positions` нь crypto-с `/`-г хасдаг (`SOL/USD` ->
+    `SOLUSD`) — `Position.symbol`-оор шууд quote/bars дуудвал Alpaca
+    таньдаггүй, хоосон буцаана (T-99, эмпирик ажиглалт: candle chart
+    хоосон харагдах шалтгаан). `exits.py`/`risk_context.py`-тэй ЯГ адилхан
+    `settings.RESEARCH_SYMBOLS`-ийн slash-тэй бичлэг рүү буцаана."""
+    watch = {_normalize(s): s for s in settings.research_symbols}
+    return watch.get(_normalize(symbol), symbol)
+
+
+@router.get("/market/quote/{symbol:path}", operation_id="getQuote")
 async def get_quote(request: Request, machine: StateMachineDep, symbol: str):
     """Илгээхээс өмнөх notional-ийн эх сурвалж (LLD §16.5).
 
     Хуучирсан quote-ыг ЗАСАХГҮЙ, `stale` тугаар ил гаргана; quote огт
     байхгүй бол 503 — таамагласан үнэ буцаахгүй (хавсралт 10).
     """
+    symbol = _order_form_symbol(symbol.upper(), request.app.state.settings)
     try:
-        result = await request.app.state.broker.get_quote(symbol.upper())
+        result = await request.app.state.broker.get_quote(symbol)
     except BrokerUnavailable as exc:
         raise problem("broker_unavailable", 503, str(exc)) from exc
     quote = result.data
@@ -127,6 +175,38 @@ async def get_quote(request: Request, machine: StateMachineDep, symbol: str):
         system_state=result.system_state,
         as_of=result.as_of,
         stale=result.stale,
+    )
+
+
+@router.get("/market/bars/{symbol:path}", operation_id="getMarketBars")
+async def get_market_bars(
+    request: Request,
+    machine: StateMachineDep,
+    symbol: str,
+    timeframe: str = Query("5Min"),
+    minutes: int = Query(240, ge=1, le=10080),
+):
+    """Candle chart-ийн эх сурвалж (T-99, хувийн төсөл, LLD-д тусгаагүй).
+
+    `agents/tools.py::get_bars`-ийн ЯГ адилхан broker.get_bars-аар дамжина
+    — байгаа bar-уудыг л буцаана, зохиосон bar ХЭЗЭЭ Ч биш.
+    """
+    broker = request.app.state.broker
+    getter = getattr(broker, "get_bars", None)
+    if getter is None:
+        raise problem("broker_unavailable", 503, "энэ broker-т bars дэмжигдээгүй")
+    symbol = _order_form_symbol(symbol.upper(), request.app.state.settings)
+    end = now_utc()
+    start = end - timedelta(minutes=minutes)
+    try:
+        bars = await getter(symbol, timeframe, to_iso(start), to_iso(end))
+    except BrokerUnavailable as exc:
+        raise problem("broker_unavailable", 503, str(exc)) from exc
+    state = await machine.current()
+    return envelope(
+        {"symbol": symbol, "timeframe": timeframe, "bars": bars},
+        source=current_source(request),
+        system_state=state.state,
     )
 
 
@@ -153,6 +233,65 @@ async def get_orders(
     state = await machine.current()
     return envelope(
         {"orders": [order_json(row) for row in rows]},
+        source=current_source(request),
+        system_state=state.state,
+    )
+
+
+async def closed_trade_totals(session) -> tuple[int, Decimal]:
+    """БҮХ хаалтын тоо ба цэвэр дүн — ХЯЗГААРГҮЙ.
+
+    `closed_trade_stats` нь prompt-ийн цонх тул сүүлийн 20 мөрөөр таслагдана.
+    Самбарын оноо тэр цонхоор гарвал 20 дээр хөшиж, дараагийн хаалт бүр нэгийг
+    чимээгүй түлхэж гаргана. Онооны самбар нь бүх түүхээ харах ёстой.
+    """
+    row = (
+        await session.execute(
+            select(func.count(), func.sum(models.Order.realized_pl)).where(
+                models.Order.realized_pl.is_not(None)
+            )
+        )
+    ).one()
+    return int(row[0]), Decimal(row[1] or 0)
+
+
+@router.get("/performance", operation_id="getPerformance")
+async def get_performance(request: Request, machine: StateMachineDep, session: SessionDep):
+    """Хаагдсан арилжааны үр дүн (T-99, хувийн төсөл).
+
+    `net`/`per_symbol`/`recent` нь prompt-ийн `_learning_context`-тэй ЯГ нэг
+    эх функцээс — сүүлийн 20 хаалтын цонх. `total` нь тэр цонхгүй, бүх
+    хаалтын нэгтгэл. Энд дахин нэгтгэл ХИЙХГҮЙ, зөвхөн буулгана.
+    """
+    stats = await closed_trade_stats(session)
+    total_trades, total_net = await closed_trade_totals(session)
+    state = await machine.current()
+    return envelope(
+        {
+            "total": {"trades": total_trades, "net": money_field(total_net)},
+            "per_symbol": [
+                {
+                    "symbol": s["symbol"],
+                    "trades": s["trades"],
+                    "wins": s["wins"],
+                    "losses": s["losses"],
+                    "net": money_field(s["net"]),
+                }
+                for s in stats["per_symbol"]
+            ],
+            "net": money_field(sum((s["net"] for s in stats["per_symbol"]), Decimal("0"))),
+            "recent": [
+                {
+                    "symbol": r["symbol"],
+                    "side": r["side"],
+                    "qty": qty_field(r["qty"]),
+                    "realized_pl": money_field(r["realized_pl"]),
+                    "reason": r["reason"],
+                    "filled_at": to_iso(r["filled_at"]),
+                }
+                for r in stats["recent"]
+            ],
+        },
         source=current_source(request),
         system_state=state.state,
     )

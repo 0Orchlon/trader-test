@@ -69,3 +69,12 @@ REVOKE TRUNCATE ON audit_log FROM PUBLIC
 ;--split--
 
 REVOKE TRUNCATE ON system_state FROM PUBLIC
+;--split--
+
+-- `create_all` нь ЗӨВХӨН дутуу ХҮСНЭГТ үүсгэнэ — байгаа хүснэгт дээр шинэ БАГАНА
+-- нэмэхгүй. `orders` нь аль хэдийн байдаг тул exit manager-ийн багануудыг энд
+-- гараар нэмнэ. Төрөл нь ORM-ийн `NUM = Numeric(20, 8)`-тай яг тохирно.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS entry_price NUMERIC(20, 8)
+;--split--
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS realized_pl NUMERIC(20, 8)

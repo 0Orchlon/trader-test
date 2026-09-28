@@ -134,3 +134,61 @@ async def test_non_trade_update_streams_are_ignored_not_guessed():
     )
     adapter = _adapter(connect)
     assert [u async for u in adapter.stream_trade_updates()] == []
+
+
+MD_CONNECTED = [{"T": "success", "msg": "connected"}]
+MD_AUTHENTICATED = [{"T": "success", "msg": "authenticated"}]
+MD_SUBSCRIPTION = [{"T": "subscription", "trades": ["BTC/USD"], "quotes": ["BTC/USD"]}]
+MD_TRADE = [{"T": "t", "S": "BTC/USD", "p": 84123.45, "t": "2026-09-25T05:00:00Z"}]
+MD_QUOTE = [{"T": "q", "S": "BTC/USD", "bp": 84100.00, "ap": 84120.00, "t": "2026-09-25T05:00:01Z"}]
+MD_ERROR = [{"T": "error", "code": 400, "msg": "auth failed"}]
+
+
+async def test_market_data_authenticates_subscribes_and_maps_the_trade():
+    socket, connect = fake_ws_connect(
+        [
+            json.dumps(MD_CONNECTED),
+            json.dumps(MD_AUTHENTICATED),
+            json.dumps(MD_SUBSCRIPTION),
+            json.dumps(MD_TRADE),
+            json.dumps(MD_QUOTE),
+        ]
+    )
+    adapter = _adapter(connect)
+
+    ticks = [tick async for tick in adapter.stream_market_data(["BTC/USD"])]
+
+    assert socket.urls == ["wss://stream.data.alpaca.markets/v1beta3/crypto/us"]
+    assert socket.sent == [
+        {"action": "auth", "key": "k", "secret": "s"},
+        {"action": "subscribe", "trades": ["BTC/USD"], "quotes": ["BTC/USD"]},
+    ]
+    assert len(ticks) == 2
+    assert ticks[0].symbol == "BTC/USD"
+    assert ticks[0].price == Decimal("84123.45")
+    assert ticks[1].price == Decimal("84110.00")  # (84100 + 84120) / 2
+    assert socket.closed is True
+
+
+async def test_market_data_error_frame_raises():
+    _, connect = fake_ws_connect([json.dumps(MD_ERROR)])
+    adapter = _adapter(connect)
+    with pytest.raises(BrokerUnavailable, match="auth failed"):
+        async for _ in adapter.stream_market_data(["BTC/USD"]):
+            pass  # pragma: no cover
+
+
+async def test_market_data_stream_ending_without_auth_is_an_error():
+    """«чимээгүй хүлээх» нь хамгийн аюултай хэлбэр энд ч мөн адил."""
+    _, connect = fake_ws_connect([json.dumps(MD_CONNECTED)])
+    adapter = _adapter(connect)
+    with pytest.raises(BrokerUnavailable, match="authenticated"):
+        async for _ in adapter.stream_market_data(["BTC/USD"]):
+            pass  # pragma: no cover
+
+
+async def test_market_data_no_symbols_never_opens_a_socket():
+    socket, connect = fake_ws_connect([])
+    adapter = _adapter(connect)
+    assert [t async for t in adapter.stream_market_data([])] == []
+    assert socket.urls == []

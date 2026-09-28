@@ -43,18 +43,30 @@ from app.util.time import now_utc, parse_iso
 DATA_HOST = "data.alpaca.markets"
 READ_ATTEMPTS = 3
 
+
+def is_crypto_symbol(symbol: str) -> bool:
+    """Alpaca-ийн crypto pair (`BTC/USD`) нь `/`-тэй — stock ticker ХЭЗЭЭ Ч
+    `/` агуулахгүй тул энэ нь найдвартай ялгах шинж (T-99, хувийн төсөл)."""
+    return "/" in symbol
+
 #: Alpaca-ийн `POST /v2/orders`-д броker-ийн ТАТГАЛЗАЛ гэж үзэх статусууд.
 #: 403 = wash trade / buying power, 422 = хүчингүй параметр. Бүгд «Alpaca
 #: хариулсан» гэсэн үг тул `BrokerUnavailable` БИШ. 401 (түлхүүр), 429
 #: (rate limit), 5xx нь ЖИНХЭНЭ хүрэхгүй байдал — тэднийг оруулахгүй.
 REJECT_STATUSES = frozenset({400, 403, 409, 422})
 
-#: Alpaca-ийн order статусыг домэйны статус руу буулгах хүснэгт. Таарахгүй
-#: статусыг ТААМАГЛАХГҮЙ — `failed` гэж тэмдэглээд ил үлдээнэ.
+#: Alpaca-ийн order статусыг домэйны статус руу буулгах хүснэгт. Alpaca-ийн
+#: баримтад бичигдсэн АМЬД/ХҮЛЭЭГДЭЖ буй төлөв бүрийг ил нэрлэнэ — тэдгээр
+#: order нь ширхэг хөдөлгөсөөр байх тул терминал төлөв рүү буулгах нь худал.
 _STATUS_MAP = {
     "new": OrderStatus.ACCEPTED,
     "accepted": OrderStatus.ACCEPTED,
     "pending_new": OrderStatus.ACCEPTED,
+    "pending_cancel": OrderStatus.ACCEPTED,
+    "pending_replace": OrderStatus.ACCEPTED,
+    "stopped": OrderStatus.ACCEPTED,
+    "calculated": OrderStatus.ACCEPTED,
+    "accepted_for_bidding": OrderStatus.ACCEPTED,
     "partially_filled": OrderStatus.PARTIALLY_FILLED,
     "filled": OrderStatus.FILLED,
     "canceled": OrderStatus.CANCELED,
@@ -63,6 +75,18 @@ _STATUS_MAP = {
     "rejected": OrderStatus.REJECTED,
     "done_for_day": OrderStatus.EXPIRED,
 }
+
+
+def _status(raw: Any) -> OrderStatus:
+    """Alpaca-ийн статус → домэйны статус. Танихгүйг АМЬД гэж үзнэ.
+
+    Танихгүй статусыг `failed` гэж тамгалбал ТЕРМИНАЛ болно: `failed` нь
+    `OPEN_ORDER_STATUSES`-д байхгүй тул exits-ийн давхар-зарах хаалга тэр
+    symbol-ыг хамрахаа болиод амьд order дээр нэмж зарна. Тиймээс алдах
+    чиглэл нь нэг л тал — «амьд»: хамгийн муудаа хэт болгоомжилж хаалтыг
+    хойшлуулна, ширхэг ХЭЗЭЭ Ч илүү хөдлөхгүй.
+    """
+    return _STATUS_MAP.get(str(raw), OrderStatus.ACCEPTED)
 
 
 def _alpaca_error(response: httpx.Response) -> tuple[str | None, str]:
@@ -156,8 +180,11 @@ class AlpacaAdapter:
             system_state=self._system_state_provider(),
         )
 
-    async def _read(self, url: str, **kwargs) -> Any:
-        """Унших дуудалт — exponential backoff, 3 оролдлого."""
+    async def _read(self, url: str, *, missing_ok: bool = False, **kwargs) -> Any:
+        """Унших дуудалт — exponential backoff, 3 оролдлого.
+
+        `missing_ok` үед 404 нь `None` — «хүрэхгүй» БИШ, Alpaca ХАРИУЛСАН.
+        """
         check_egress(url if url.startswith("http") else self.base_url + url)
         last_exc: Exception | None = None
         for attempt in range(READ_ATTEMPTS):
@@ -166,6 +193,15 @@ class AlpacaAdapter:
                 response.raise_for_status()
                 payload = response.json(parse_float=Decimal)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
+                if (
+                    missing_ok
+                    and isinstance(exc, httpx.HTTPStatusError)
+                    and exc.response.status_code == 404
+                ):
+                    # Хариулсан broker нь амьд — `api_error_rate` хөдлөхгүй,
+                    # дахин оролдох ч утгагүй.
+                    await self._report(True)
+                    return None
                 last_exc = exc
                 if attempt < READ_ATTEMPTS - 1:
                     await asyncio.sleep(0.01 * (2**attempt))
@@ -215,21 +251,59 @@ class AlpacaAdapter:
         return self._envelope(positions)
 
     async def get_open_orders(self) -> Envelope[list[BrokerOrder]]:
-        raw = await self._read("/v2/orders", params={"status": "open"})
+        # `limit` заахгүй бол Alpaca анхдагчаар 50 мөр буцаана, pagination
+        # энд байхгүй. `exits.py` үүнийг давхар-зарахаас хамгаалах гарцаа
+        # болгон ашигладаг тул таслагдсан жагсаалт = чимээгүй унтарсан хамгаалалт.
+        raw = await self._read("/v2/orders", params={"status": "open", "limit": 500})
         return self._envelope([self._map_order(row) for row in raw])
 
+    async def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None:
+        """Нэг order-ийн үнэн, ТӨЛӨВӨӨС ҮЛ ХАМААРАН (`GET
+        /v2/orders:by_client_order_id`).
+
+        `get_open_orders` нь `status=open` тул БИЕЛСЭН order тэнд
+        тодорхойлолтоороо байхгүй. Тулгалт нь яг тэр тохиолдлын төлөө байдаг
+        учир мөрийг нэрээр нь асуух ЭНЭ зам байхгүй бол «биелчихсэн orphan»
+        бүтцээрээ үл үзэгдэнэ. 404 = «ийм order алга» гэж Alpaca ХАРИУЛСАН —
+        хүрэхгүй байдал БИШ тул `None`.
+        """
+        raw = await self._read(
+            "/v2/orders:by_client_order_id",
+            params={"client_order_id": client_order_id},
+            missing_ok=True,
+        )
+        return None if raw is None else self._map_order(raw)
+
     async def get_quote(self, symbol: str) -> Envelope[Quote]:
-        raw = await self._read(f"https://{DATA_HOST}/v2/stocks/{symbol}/snapshot")
-        quote = raw.get("latestQuote")
-        trade = raw.get("latestTrade")
+        # T-99 (хувийн төсөл): crypto pair (`BTC/USD`) нь `/`-тэй тул stock-
+        # ийн snapshot зам БИШ — Alpaca-ийн тусдаа crypto data API-аар орно.
+        # 24/7 арилжаанд `get_clock`-ийн зах зээлийн цаг хамаарахгүй.
+        if is_crypto_symbol(symbol):
+            raw = await self._read(
+                f"https://{DATA_HOST}/v1beta3/crypto/us/snapshots", params={"symbols": symbol}
+            )
+            snapshot = (raw.get("snapshots") or {}).get(symbol)
+            if snapshot is None:
+                raise BrokerUnavailable(f"{symbol}: crypto snapshot байхгүй")
+            quote, trade = snapshot.get("latestQuote"), snapshot.get("latestTrade")
+        else:
+            raw = await self._read(f"https://{DATA_HOST}/v2/stocks/{symbol}/snapshot")
+            quote, trade = raw.get("latestQuote"), raw.get("latestTrade")
         if not quote or not trade:
             # Байхгүйг ТААМАГЛАХГҮЙ — mid тооцох нь зохиосон үнэ болно.
             raise BrokerUnavailable(f"{symbol}: quote эсвэл trade байхгүй")
         quote_ts = parse_iso(quote["t"])
-        stale = (now_utc() - quote_ts).total_seconds() > self.stale_after_seconds
+        now = now_utc()
+        # Stop/target нь `last` = СҮҮЛИЙН ХЭЛЦЭЛ-ийн үнээр бодогддог тул
+        # хэлцлийн насыг ч шалгана: нимгэн ticker дээр market maker цагийн
+        # турш quote-оо шинэчилсээр байхад нэг ч хэлцэл хэвлэгдэхгүй байж
+        # болно — зөвхөн quote-оор шалгавал хуучирсан үнээр MARKET гарна.
+        stale = (now - quote_ts).total_seconds() > self.stale_after_seconds or (
+            now - parse_iso(trade["t"])
+        ).total_seconds() > self.stale_after_seconds
         return self._envelope(
             Quote(
-                symbol=raw.get("symbol", symbol),
+                symbol=symbol if is_crypto_symbol(symbol) else raw.get("symbol", symbol),
                 bid=_dec(quote["bp"]),
                 ask=_dec(quote["ap"]),
                 last=_dec(trade["p"]),
@@ -238,6 +312,53 @@ class AlpacaAdapter:
             as_of=quote_ts,
             stale=stale,
         )
+
+    async def get_bars(self, symbol: str, timeframe: str, start: str, end: str) -> list[dict]:
+        """`tools.get_bars`-ийн getattr сонголтоор дуудагдана — байгаа bar-уудыг
+        л буцаана, зохиосон bar ХЭЗЭЭ Ч биш (`_read` хоосон жагсаалт өгвөл
+        handler `no_data` буцаана)."""
+        params = {"timeframe": timeframe, "start": start, "end": end, "limit": 10000}
+        if is_crypto_symbol(symbol):
+            raw = await self._read(
+                f"https://{DATA_HOST}/v1beta3/crypto/us/bars",
+                params={**params, "symbols": symbol},
+            )
+            rows = (raw.get("bars") or {}).get(symbol, [])
+        else:
+            # T-99: `feed` заагаагүй бол Alpaca анхдагчаар төлбөртэй SIP руу
+            # оруулж 403 буцаадаг — үнэгүй төлөвлөгөө зөвхөн `iex` феед авна.
+            raw = await self._read(
+                f"https://{DATA_HOST}/v2/stocks/{symbol}/bars", params={**params, "feed": "iex"}
+            )
+            rows = raw.get("bars") or []
+        return [
+            {
+                "t": row["t"],
+                "open": str(row["o"]),
+                "high": str(row["h"]),
+                "low": str(row["l"]),
+                "close": str(row["c"]),
+                "volume": int(row["v"]),
+            }
+            for row in rows
+        ]
+
+    async def get_news(self, symbols: list[str] | None, limit: int) -> list[dict]:
+        """Alpaca-ийн мэдээний feed — судалгааны чиглэл, тоон нотолгоо БИШ."""
+        params: dict[str, Any] = {"limit": limit, "sort": "desc"}
+        if symbols:
+            params["symbols"] = ",".join(symbols)
+        raw = await self._read(f"https://{DATA_HOST}/v1beta1/news", params=params)
+        return [
+            {
+                "headline": row["headline"],
+                "summary": row.get("summary", ""),
+                "url": row.get("url", ""),
+                "created_at": row["created_at"],
+                "symbols": row.get("symbols", []),
+            }
+            for row in raw.get("news", [])
+        ]
 
     # --- бичих зам ---
 
@@ -324,7 +445,7 @@ class AlpacaAdapter:
             filled_qty=Decimal(str(raw.get("filled_qty", "0"))),
             order_type=OrderType(raw.get("type", raw.get("order_type", "market"))),
             time_in_force=TimeInForce(raw.get("time_in_force", "day")),
-            status=_STATUS_MAP.get(str(raw.get("status")), OrderStatus.FAILED),
+            status=_status(raw.get("status")),
             submitted_at=parse_iso(raw["submitted_at"]) if raw.get("submitted_at") else now_utc(),
             filled_at=parse_iso(raw["filled_at"]) if raw.get("filled_at") else None,
             limit_price=Decimal(str(raw["limit_price"])) if raw.get("limit_price") else None,
@@ -337,7 +458,7 @@ class AlpacaAdapter:
             event=str(raw.get("event", "")),
             broker_order_id=str(order.get("id", "")),
             client_order_id=str(order.get("client_order_id", "")),
-            status=_STATUS_MAP.get(str(order.get("status")), OrderStatus.FAILED),
+            status=_status(order.get("status")),
             filled_qty=Decimal(str(order.get("filled_qty", "0"))),
             filled_avg_price=(
                 Decimal(str(order["filled_avg_price"]))
@@ -346,13 +467,83 @@ class AlpacaAdapter:
             ),
             ts=parse_iso(raw["timestamp"]) if raw.get("timestamp") else now_utc(),
             raw=raw,
+            # Alpaca нь ЭНЭ биелэлтийг дээд түвшинд, order-ийн нийлбэрийг
+            # `order`-т өгнө (docs «Trade Updates»).
+            fill_qty=Decimal(str(raw["qty"])) if raw.get("qty") else None,
+            fill_price=Decimal(str(raw["price"])) if raw.get("price") else None,
         )
 
     # --- урсгалууд ---
 
-    async def stream_market_data(self, symbols: list[str]) -> AsyncIterator[Tick]:  # pragma: no cover
-        raise NotImplementedError("market-data урсгал энэ хувилбарт холбогдоогүй")
-        yield  # энэ мөр нь методыг async generator болгоно (хүрэхгүй)
+    #: Crypto market-data WS (docs «Real-time Crypto Pricing Data»). Stock
+    #: market data WS байхгүй энд — RESEARCH_SYMBOLS бүгд crypto (T-99,
+    #: хувийн төсөл, эдгээр л амьд арилжигдана).
+    MARKET_DATA_STREAM_URL = "wss://stream.data.alpaca.markets/v1beta3/crypto/us"
+
+    async def stream_market_data(self, symbols: list[str]) -> AsyncIterator[Tick]:
+        """Alpaca-ийн crypto trade WS.
+
+        Дараалал (`trade_updates`-ээс ӨӨР хэлбэр — фрейм бүр ЖАГСААЛТ):
+        холбогдмогц `[{"T":"success","msg":"connected"}]` ирнэ (үл
+        хэрэгсэнэ) → `auth` илгээнэ → `[{"T":"success",
+        "msg":"authenticated"}]` → `subscribe` илгээнэ →
+        `[{"T":"subscription",...}]` → `[{"T":"t"|"q",...},...]`. Энэ
+        хэлбэр Alpaca-ийн баримт бичгээс — бодит сокеттой шалгаагүй тул
+        `T`/талбарын нэр таарахгүй бол `BrokerUnavailable`-аар ил гарна,
+        чимээгүй унтрахгүй.
+
+        `trades`-ээс гадна `quotes`-ыг ч захиална: нимгэн crypto pair
+        (жишээ нь AAVE/LTC) хэдэн минут хэлцэлгүй байж болох ч bid/ask нь
+        тасралтгүй шинэчлэгддэг — зөвхөн `trades` бол «real-time» гэсэн
+        зорилго өөрөө хоосон болно. Quote-ын (bid+ask)/2 нь ТААМАГ БИШ —
+        REST `get_quote`-ийн адил мэдэгдэхүйц дунджаар илэрхийлэгдэнэ.
+        """
+        if not symbols:
+            return
+        if not self._headers["APCA-API-KEY-ID"] or not self._headers["APCA-API-SECRET-KEY"]:
+            raise BrokerUnavailable("Alpaca-ийн түлхүүр байхгүй — WS нээгдэхгүй")
+        url = self.MARKET_DATA_STREAM_URL
+        check_egress(url)
+        async with self._connect(url) as socket:
+            await socket.send(
+                json.dumps(
+                    {
+                        "action": "auth",
+                        "key": self._headers["APCA-API-KEY-ID"],
+                        "secret": self._headers["APCA-API-SECRET-KEY"],
+                    }
+                )
+            )
+            authenticated = False
+            async for frame in socket:
+                for message in json.loads(frame):
+                    kind = message.get("T")
+                    if kind == "error":
+                        raise BrokerUnavailable(f"Alpaca market-data WS алдаа: {message.get('msg')}")
+                    if kind == "success" and message.get("msg") == "authenticated":
+                        authenticated = True
+                        await socket.send(
+                            json.dumps(
+                                {"action": "subscribe", "trades": symbols, "quotes": symbols}
+                            )
+                        )
+                        continue
+                    if kind == "t":
+                        yield Tick(
+                            symbol=str(message["S"]),
+                            price=_dec(message["p"]),
+                            ts=parse_iso(message["t"]),
+                        )
+                    elif kind == "q":
+                        yield Tick(
+                            symbol=str(message["S"]),
+                            price=(_dec(message["bp"]) + _dec(message["ap"])) / 2,
+                            ts=parse_iso(message["t"]),
+                        )
+                    # `connected`/`subscription` нь үнийн үйл явдал БИШ —
+                    # ТААМАГЛАХГҮЙ, чимээгүй алгасна.
+            if not authenticated:
+                raise BrokerUnavailable("Alpaca market-data WS: authenticated мессеж ирсэнгүй")
 
     @property
     def stream_url(self) -> str:

@@ -197,6 +197,50 @@ tools:
           maximum: 10000
       additionalProperties: false
 
+  - name: get_news
+    access: read
+    description: >-
+      Return recent market news headlines, optionally filtered by symbol.
+      Directional research context ONLY — never cite this in grounded_in for
+      a numeric claim, only get_quote / get_bars / get_account / get_positions
+      carry numbers a proposal can be grounded in.
+    input_schema:
+      type: object
+      properties:
+        symbols:
+          type: array
+          items:
+            type: string
+          description: Filter to these tickers/pairs. Omit for general market news.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+      additionalProperties: false
+    output_data_schema:
+      type: object
+      required: [news]
+      properties:
+        news:
+          type: array
+          items:
+            type: object
+            required: [headline, summary, url, created_at, symbols]
+            properties:
+              headline:
+                type: string
+              summary:
+                type: string
+              url:
+                type: string
+              created_at:
+                type: string
+                format: date-time
+              symbols:
+                type: array
+                items:
+                  type: string
+
   - name: get_backtest_result
     access: read
     description: >-

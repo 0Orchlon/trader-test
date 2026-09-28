@@ -80,6 +80,31 @@ async def test_system_state_history_is_append_only_by_seq(db_session):
     ]
 
 
+async def test_a_later_added_column_reaches_a_non_postgres_database(tmp_path):
+    """`create_all` нь БАЙГАА хүснэгтэд багана нэмэхгүй, `postgres_*.sql` нь
+    зөвхөн Postgres дээр ажиллана — хоёрын хооронд анхдагч `DATABASE_URL`
+    (sqlite файл) нь `orders.entry_price`-гүй мөнхөд хоцорч байв."""
+    from sqlalchemy import text
+
+    from app.migrate import apply_schema
+
+    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path.as_posix()}/migrate.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE orders DROP COLUMN entry_price"))
+        await conn.execute(text("ALTER TABLE orders DROP COLUMN realized_pl"))
+
+    await apply_schema(engine)
+
+    def _columns(conn):
+        return {c["name"] for c in inspect(conn).get_columns("orders")}
+
+    async with engine.connect() as conn:
+        columns = await conn.run_sync(_columns)
+    await engine.dispose()
+    assert {"entry_price", "realized_pl"} <= columns
+
+
 # --- N-4: `orders`-ийн лавлагаа нь FK-гүй байв (LLD §5.2) ---
 
 

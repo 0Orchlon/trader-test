@@ -11,6 +11,9 @@
 | `enforce_breaker`  | 5s | дөрвөн метрик; босго давбал `halted` |
 | `reconcile_eod`    | өдөрт 1 | Alpaca ↔ локал тулгалт |
 | `run_research_cycle` | `RESEARCH_INTERVAL_SECONDS` | автономи LLM мөчлөг (T-99, хувийн төсөл) |
+| `snapshot_equity` | `EQUITY_SNAPSHOT_SECONDS` | equity-ийн бодит түүврийг хадгална (T-99, хувийн төсөл) |
+| `run_exits` | `EXIT_CHECK_SECONDS` | stop/target/max-hold хаалт (T-99, хувийн төсөл) |
+| `run_manual_take_profit` | `MANUAL_TAKE_PROFIT_CHECK_SECONDS` | гар позицийг ашигтай болмогц авто-хаах toggle (T-99, хувийн төсөл) |
 
 APScheduler-ийг ЭНД л мэднэ: бусад модуль цэвэр async функц хэвээр тул
 тест нь scheduler-гүйгээр шууд дуудна.
@@ -68,6 +71,39 @@ async def run_research_cycle(sessionmaker, settings, broker, publisher, provider
     await _run_research_cycle(sessionmaker, settings, broker, publisher, provider_router, bus)
 
 
+async def run_exits(sessionmaker, settings, broker, publisher) -> None:
+    """T-99 (хувийн төсөл) — stop-loss / take-profit / max-hold хаалт."""
+    from app.execution.exits import run_exits as _run_exits
+
+    await _run_exits(sessionmaker, settings, broker, publisher)
+
+
+async def run_manual_take_profit(sessionmaker, settings, broker, publisher) -> None:
+    """T-99 (хувийн төсөл) — гар позицийг ашигтай болмогц авто-хаах toggle."""
+    from app.execution.manual_take_profit import run_manual_take_profit as _run
+
+    await _run(sessionmaker, settings, broker, publisher)
+
+
+async def snapshot_equity(sessionmaker, broker) -> None:
+    """T-99 (хувийн төсөл) — dashboard-ийн минут тутмын graph-ийн эх сурвалж.
+
+    Broker унасан бол алгасна: хуучин утгыг ХЭЗЭЭ Ч давтаж бичихгүй
+    («кэшээс хуучин утга» гэдэг хэлбэрийн зөрчлөөс сэргийлнэ, LLD §7).
+    """
+    from app import models
+    from app.broker.models import BrokerUnavailable
+    from app.util.time import now_utc
+
+    try:
+        account = (await broker.get_account()).data
+    except BrokerUnavailable:
+        return
+    async with sessionmaker() as session:
+        session.add(models.EquitySnapshot(equity=account.equity, cash=account.cash, ts=now_utc()))
+        await session.commit()
+
+
 def schedule_wind_down_deadline(app, deadline) -> None:
     """Grace дуусах ЯГ агшинд ажиллах нэг удаагийн job (LLD §6.4, D-8).
 
@@ -120,5 +156,20 @@ def build_scheduler(app) -> AsyncIOScheduler:
         args=[sessionmaker, settings, broker, publisher, app.state.provider_router, app.state.bus],
         id="run_research_cycle", max_instances=1, coalesce=True,
         misfire_grace_time=settings.RESEARCH_INTERVAL_SECONDS,
+    )
+    scheduler.add_job(
+        run_exits, "interval", seconds=settings.EXIT_CHECK_SECONDS,
+        args=[sessionmaker, settings, broker, publisher], id="run_exits",
+        max_instances=1, coalesce=True, misfire_grace_time=settings.EXIT_CHECK_SECONDS,
+    )
+    scheduler.add_job(
+        snapshot_equity, "interval", seconds=settings.EQUITY_SNAPSHOT_SECONDS,
+        args=[sessionmaker, broker], id="snapshot_equity",
+        max_instances=1, coalesce=True, misfire_grace_time=settings.EQUITY_SNAPSHOT_SECONDS,
+    )
+    scheduler.add_job(
+        run_manual_take_profit, "interval", seconds=settings.MANUAL_TAKE_PROFIT_CHECK_SECONDS,
+        args=[sessionmaker, settings, broker, publisher], id="run_manual_take_profit",
+        max_instances=1, coalesce=True, misfire_grace_time=settings.MANUAL_TAKE_PROFIT_CHECK_SECONDS,
     )
     return scheduler

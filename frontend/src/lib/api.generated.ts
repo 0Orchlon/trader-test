@@ -59,6 +59,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/equity/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Минут тутмын equity түүх (T-99, хувийн төсөл)
+         * @description `snapshot_equity` job-ийн БОДИТ түүврүүд — интерполяци/тооцоолол
+         *     БАЙХГҮЙ. `/account`-ийн raw pass-through-ийг ХЭЗЭЭ Ч орлохгүй,
+         *     зөвхөн график зурахад зориулагдсан нэмэлт цуврал.
+         */
+        get: operations["getEquityHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/market/quote/{symbol}": {
         parameters: {
             query?: never;
@@ -74,6 +96,27 @@ export interface paths {
          *     үнэ ХЭЗЭЭ Ч буцаахгүй.
          */
         get: operations["getQuote"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/market/bars/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Candle chart-ийн bar-ууд (T-99, хувийн төсөл)
+         * @description Байгаа bar-уудыг л буцаана — зохиосон bar ХЭЗЭЭ Ч биш. Стock болон
+         *     crypto pair (`BTC/USD`) хоёуланд ажиллана.
+         */
+        get: operations["getMarketBars"];
         put?: never;
         post?: never;
         delete?: never;
@@ -149,6 +192,29 @@ export interface paths {
          *     (спек A-2).
          */
         post: operations["postOrdersByOrderIdCancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/performance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Хаагдсан арилжааны үр дүн (T-99, хувийн төсөл)
+         * @description `net`/`per_symbol`/`recent` нь `realized_pl` бичигдсэн СҮҮЛИЙН 20
+         *     order-ийн нэгтгэл — prompt-ийн суралцах хэсэг ЯГ ЭНЭ эх функцээс
+         *     уншина. `total` нь тэр цонхгүй, БҮХ хаалтын нэгтгэл.
+         *     `/account`-ийн equity-г ХЭЗЭЭ Ч орлохгүй.
+         */
+        get: operations["getPerformance"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -348,6 +414,152 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/research/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Дараагийн автоном research cycle хэзээ ажиллах (T-99, хувийн төсөл) */
+        get: operations["getResearchStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/research/run-now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Дараагийн мөчлөгийг хүлээхгүй, ОДООХОН ажиллуулах (T-99, хувийн төсөл)
+         * @description Fire-and-forget — LLM дуудлага секунд урьтдаг тул хариу шууд буцна.
+         *     Job-ийн хуваарийг эндээс дахин RESEARCH_INTERVAL_SECONDS-аар тооцно
+         *     (давхар ажиллахгүй).
+         */
+        post: operations["postResearchRunNow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/research/watchlist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Operator-ийн сонгосон дэд жагсаалт (T-99, хувийн төсөл)
+         * @description `symbols` нь `available_symbols`-ийн дэд олонлог л байж болно — шинэ,
+         *     тохируулаагүй symbol зөвшөөрөгдөхгүй.
+         */
+        put: operations["putResearchWatchlist"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manual-take-profit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Гар позицийг ашигтай болмогц авто-хаах toggle-ийн төлөв (T-99, хувийн төсөл) */
+        get: operations["getManualTakeProfit"];
+        /**
+         * Гар позицийг ашигтай болмогц авто-хаах toggle-ийг унтраах/асаах (T-99, хувийн төсөл)
+         * @description Асаавал `exits.py`-ийн ХӨНДӨХГҮЙ (цэвэр `research_agent` бус) БҮХ
+         *     позицийг эерэг `unrealized_pl`-тай болмогц бүхэлд нь market order-оор
+         *     хаана. `Position.unrealized_pl`-ийг Alpaca-аас шууд ашигладаг тул
+         *     cost-basis дахин тооцоолол шаардахгүй.
+         */
+        put: operations["putManualTakeProfit"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capital/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Симуляцлагдсан profit-cut (T-99, хувийн төсөл)
+         * @description Alpaca руу ЮУ Ч илгээхгүй — локал ledger-д бичигдэнэ. Нийлбэр
+         *     (`GET /capital/summary`) нь энэ цэгээс хойшхи Risk Agent-ийн
+         *     equity/exposure тооцоолол бүрээс хасагдана; `GET /account`-ийн
+         *     raw Alpaca утгыг ХЭЗЭЭ Ч өөрчлөхгүй (AC-1).
+         */
+        post: operations["postCapitalWithdraw"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capital/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Broker equity, нийт татан авалт, үр дүнтэй equity */
+        get: operations["getCapitalSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capital/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Тохиргооны risk-ийн хязгаарууд (Settings-ийн шууд буулгалт)
+         * @description `risk/rules.py`-ийн ТООЦООЛОЛ БИШ — зөвхөн Settings-ийн тоонуудыг
+         *     буулгана. Operator дэлгэц дээр "exposure хэдэн хувь үлдсэн бэ"
+         *     гэдгийг order илгээхгүйгээр харуулахад ашиглагдана.
+         */
+        get: operations["getCapitalLimits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/system/state": {
         parameters: {
             query?: never;
@@ -432,6 +644,29 @@ export interface paths {
          *     замаар тойрох боломжгүй.
          */
         post: operations["postSystemActivate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/system/reconcile-now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * EOD reconcile-ийг гараар, хүлээлгүйгээр ажиллуулна (хувийн төсөл)
+         * @description `reconcile_eod` cron job-той ЯГ ИЖИЛ логик — WS-ийн алдсан
+         *     fill-ийг маргааш хүртэл хүлээхгүйгээр одоо засна. Baталгаажуулалт
+         *     шаардахгүй: зөвхөн Alpaca-ийн мэдэгдсэн утгыг локал руу хуулна,
+         *     шинэ эрсдэл нэмэхгүй.
+         */
+        post: operations["postSystemReconcileNow"];
         delete?: never;
         options?: never;
         head?: never;
@@ -570,12 +805,111 @@ export interface components {
         AccountEnvelope: components["schemas"]["Envelope"] & {
             account: components["schemas"]["Account"];
         };
+        /**
+         * @example {
+         *       "source": "alpaca_paper",
+         *       "as_of": "2026-09-18T14:30:00Z",
+         *       "stale": false,
+         *       "system_state": "active",
+         *       "points": [
+         *         {
+         *           "ts": "2026-09-18T14:28:00Z",
+         *           "equity": "100000.59",
+         *           "cash": "70000.41"
+         *         },
+         *         {
+         *           "ts": "2026-09-18T14:29:00Z",
+         *           "equity": "100012.30",
+         *           "cash": "70000.41"
+         *         }
+         *       ]
+         *     }
+         */
+        EquityHistoryEnvelope: components["schemas"]["Envelope"] & {
+            points: {
+                ts: components["schemas"]["Utc"];
+                equity: components["schemas"]["Money"];
+                cash: components["schemas"]["Money"];
+            }[];
+        };
+        /**
+         * @example {
+         *       "source": "alpaca_paper",
+         *       "as_of": "2026-09-18T14:30:00Z",
+         *       "stale": false,
+         *       "system_state": "active",
+         *       "net": "5.00",
+         *       "total": {
+         *         "trades": 34,
+         *         "net": "118.25"
+         *       },
+         *       "per_symbol": [
+         *         {
+         *           "symbol": "AAPL",
+         *           "trades": 2,
+         *           "wins": 1,
+         *           "losses": 1,
+         *           "net": "5.00"
+         *         }
+         *       ],
+         *       "recent": [
+         *         {
+         *           "symbol": "AAPL",
+         *           "side": "sell",
+         *           "qty": "2",
+         *           "realized_pl": "-12.50",
+         *           "reason": "stop_loss",
+         *           "filled_at": "2026-09-18T14:29:00Z"
+         *         }
+         *       ]
+         *     }
+         */
+        PerformanceEnvelope: components["schemas"]["Envelope"] & {
+            net: components["schemas"]["Money"];
+            /**
+             * @description БҮХ хаагдсан арилжааны нэгтгэл — хязгааргүй. `net`/`per_symbol`/
+             *     `recent` нь prompt-ийн цонх тул сүүлийн 20 мөрөөр таслагдсан;
+             *     самбарын оноо нь энэ талбараас уншина.
+             */
+            total: {
+                trades: number;
+                net: components["schemas"]["Money"];
+            };
+            per_symbol: {
+                symbol: string;
+                trades: number;
+                wins: number;
+                losses: number;
+                net: components["schemas"]["Money"];
+            }[];
+            recent: {
+                symbol: string;
+                side: string;
+                qty: components["schemas"]["Quantity"];
+                realized_pl: components["schemas"]["Money"];
+                /** @description `origin_detail`-ийн `exit:` угтваргүй хэсэг; null бол `manual`. */
+                reason: string;
+                filled_at: components["schemas"]["Utc"] | null;
+            }[];
+        };
         Quote: {
             symbol: string;
             bid: components["schemas"]["Money"];
             ask: components["schemas"]["Money"];
             last: components["schemas"]["Money"];
             quote_ts: components["schemas"]["Utc"];
+        };
+        BarsEnvelope: components["schemas"]["Envelope"] & {
+            symbol: string;
+            timeframe: string;
+            bars: {
+                t: components["schemas"]["Utc"];
+                open: components["schemas"]["Money"];
+                high: components["schemas"]["Money"];
+                low: components["schemas"]["Money"];
+                close: components["schemas"]["Money"];
+                volume: number;
+            }[];
         };
         /**
          * @example {
@@ -1152,6 +1486,70 @@ export interface components {
             in_flight_calls: number;
             switched_at: components["schemas"]["Utc"];
         };
+        ResearchStatusEnvelope: components["schemas"]["Envelope"] & {
+            /** @description RFC 3339 — job тохируулагдаагүй бол `null`. */
+            next_run_at?: string | null;
+            interval_seconds: number;
+            running: boolean;
+            /** @description Одоо ИДЭВХТЭЙ (operator-ийн сонгосон дэд олонлог). */
+            symbols: string[];
+            /** @description Сонгож болох БҮХ symbol (`RESEARCH_SYMBOLS`). */
+            available_symbols: string[];
+        };
+        ManualTakeProfitEnvelope: components["schemas"]["Envelope"] & {
+            enabled: boolean;
+        };
+        /** @description `amount` эсвэл `pct`-ийн ЗӨВХӨН нэгийг өгнө. */
+        WithdrawRequest: {
+            amount?: components["schemas"]["Money"];
+            /** @description (0, 100] мужийн хувь. `equity`-ээс тооцогдоно. */
+            pct?: string;
+            note?: string;
+        };
+        WithdrawalEnvelope: components["schemas"]["Envelope"] & {
+            withdrawal: {
+                /** Format: uuid */
+                id: string;
+                amount: components["schemas"]["Money"];
+                pct?: string | null;
+                equity_at_withdrawal: components["schemas"]["Money"];
+                note?: string | null;
+            };
+        };
+        /**
+         * @example {
+         *       "source": "alpaca_paper",
+         *       "as_of": "2026-09-16T14:30:00Z",
+         *       "stale": false,
+         *       "system_state": "active",
+         *       "broker_equity": "104238.17",
+         *       "total_withdrawn": "30000.00",
+         *       "effective_equity": "74238.17"
+         *     }
+         */
+        CapitalSummaryEnvelope: components["schemas"]["Envelope"] & {
+            broker_equity: components["schemas"]["Money"];
+            total_withdrawn: components["schemas"]["Money"];
+            effective_equity: components["schemas"]["Money"];
+        };
+        /**
+         * @example {
+         *       "source": "alpaca_paper",
+         *       "as_of": "2026-09-16T14:30:00Z",
+         *       "stale": false,
+         *       "system_state": "active",
+         *       "max_total_exposure_pct": "60",
+         *       "max_position_pct": "10",
+         *       "max_order_notional": "5000.00",
+         *       "daily_loss_limit": "-2000.00"
+         *     }
+         */
+        CapitalLimitsEnvelope: components["schemas"]["Envelope"] & {
+            max_total_exposure_pct: string;
+            max_position_pct: string;
+            max_order_notional: components["schemas"]["Money"];
+            daily_loss_limit: components["schemas"]["Money"];
+        };
         /**
          * @example {
          *       "source": "alpaca_paper",
@@ -1289,6 +1687,39 @@ export interface components {
                 tripped: boolean;
             }[];
         };
+        /**
+         * @example {
+         *       "source": "alpaca_paper",
+         *       "as_of": "2026-09-28T07:43:00Z",
+         *       "stale": false,
+         *       "system_state": "active",
+         *       "drift_count": 4,
+         *       "drifts": [
+         *         {
+         *           "kind": "status_mismatch",
+         *           "client_order_id": "mtp-XRPUSD-29838634",
+         *           "local": "accepted",
+         *           "broker": "filled"
+         *         }
+         *       ],
+         *       "breaker_tripped": false
+         *     }
+         */
+        ReconcileReportEnvelope: components["schemas"]["Envelope"] & {
+            drift_count: number;
+            drifts: {
+                /** @enum {string} */
+                kind: "status_mismatch" | "filled_qty_mismatch" | "missing_at_broker" | "unknown_locally";
+                client_order_id: string | null;
+                local?: string | null;
+                broker?: string | null;
+            }[];
+            /**
+             * @description `true` — зөрүүний тоо `RECONCILE_DRIFT_LIMIT`-ээс давж,
+             *     систем `halted` руу шилжсэн.
+             */
+            breaker_tripped: boolean;
+        };
         /** @description RFC 9457 Problem Details. */
         Problem: {
             /** Format: uri */
@@ -1420,6 +1851,28 @@ export interface operations {
             503: components["responses"]["BrokerUnavailable"];
         };
     };
+    getEquityHistory: {
+        parameters: {
+            query?: {
+                minutes?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EquityHistoryEnvelope"];
+                };
+            };
+        };
+    };
     getQuote: {
         parameters: {
             query?: never;
@@ -1438,6 +1891,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["QuoteEnvelope"];
+                };
+            };
+            503: components["responses"]["BrokerUnavailable"];
+        };
+    };
+    getMarketBars: {
+        parameters: {
+            query?: {
+                timeframe?: string;
+                minutes?: number;
+            };
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BarsEnvelope"];
                 };
             };
             503: components["responses"]["BrokerUnavailable"];
@@ -1540,6 +2019,26 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    getPerformance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceEnvelope"];
+                };
+            };
         };
     };
     getAttribution: {
@@ -1825,6 +2324,197 @@ export interface operations {
             };
         };
     };
+    getResearchStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchStatusEnvelope"];
+                };
+            };
+        };
+    };
+    postResearchRunNow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putResearchWatchlist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    symbols: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Тохиргоонд байхгүй symbol эсвэл хоосон жагсаалт */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getManualTakeProfit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualTakeProfitEnvelope"];
+                };
+            };
+        };
+    };
+    putManualTakeProfit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    enabled: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualTakeProfitEnvelope"];
+                };
+            };
+        };
+    };
+    postCapitalWithdraw: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WithdrawRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WithdrawalEnvelope"];
+                };
+            };
+            /** @description `amount`/`pct`-ийн аль нь ч байхгүй/хоёул өгөгдсөн, эсвэл мужаас гадуур */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getCapitalSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapitalSummaryEnvelope"];
+                };
+            };
+            503: components["responses"]["BrokerUnavailable"];
+        };
+    };
+    getCapitalLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapitalLimitsEnvelope"];
+                };
+            };
+        };
+    };
     getSystemState: {
         parameters: {
             query?: never;
@@ -1966,6 +2656,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    postSystemReconcileNow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconcileReportEnvelope"];
                 };
             };
         };

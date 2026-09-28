@@ -1,12 +1,13 @@
 /**
  * Approval Queue UI (T-31, LLD §16.6, AC-5, AC-6).
  *
- * Санал бүрд: agent-ийн үндэслэл, ЦИТАТ өгөгдлийн холбоос, Risk-ийн
- * шалгалтууд, TTL тоолуур. «Зөвшөөр» товч нь үндэслэлийг харахаас ӨМНӨ
- * дарагдахаар байрлуулагдаагүй — үндэслэл нь картын ДОТОР, товчны дээр.
+ * Every proposal shows: the agent's rationale, a link to the cited
+ * evidence, the Risk checks, a TTL countdown. The "Approve" button is
+ * NOT placed where it could be clicked before seeing the rationale — the
+ * rationale is INSIDE the card, above the button.
  *
- * `expected_version` нь мөр бүрийн `version`-оос — reaper-тэй уралдвал
- * backend 409 буцаана, UI дахин татна.
+ * `expected_version` comes from each row's `version` — racing the reaper
+ * gets a 409 from the backend, and the UI re-fetches.
  */
 import { useState } from 'react';
 import {
@@ -28,10 +29,18 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
 import { api, type Approval } from '@/lib/api';
-import { formatMoney, formatQuantity, formatUtc } from '@/lib/money';
+import { formatLocalDateTimeWithUtc, formatMoney, formatQuantity } from '@/lib/money';
 import { RiskPreview } from '@/features/manualTicket/ManualTicketPage';
+import { Num } from '@/components/Num';
 
 const STATES = ['pending', 'approved', 'rejected', 'expired', 'all'] as const;
+
+const STATE_COLOR: Record<string, string> = {
+  pending: 'yellow',
+  approved: 'green',
+  rejected: 'red',
+  expired: 'gray',
+};
 
 export function ApprovalsPage() {
   const queryClient = useQueryClient();
@@ -76,7 +85,7 @@ export function ApprovalsPage() {
   return (
     <Stack gap="md">
       <Group justify="space-between">
-        <Title order={3}>Зөвшөөрлийн дараалал</Title>
+        <Title order={3}>Approval queue</Title>
         <SegmentedControl
           data={STATES.map((s) => ({ value: s, label: s }))}
           value={state}
@@ -87,7 +96,7 @@ export function ApprovalsPage() {
 
       {rows.length === 0 ? (
         <Alert color="gray" data-testid="approvals-empty">
-          Хүлээгдэж буй санал алга. Alpaca руу ямар ч дуудалт хийгдээгүй.
+          No pending proposals. No calls have been made to Alpaca.
         </Alert>
       ) : null}
 
@@ -101,37 +110,41 @@ export function ApprovalsPage() {
               <Badge color={row.proposed_order.side === 'buy' ? 'green' : 'orange'}>
                 {row.proposed_order.side}
               </Badge>
-              <Text>{formatQuantity(row.proposed_order.qty)} ш</Text>
+              <Num span>{formatQuantity(row.proposed_order.qty)} shares</Num>
               <Text c="dimmed">{row.proposed_order.order_type}</Text>
               {row.proposed_order.limit_price ? (
-                <Text c="dimmed">@ {formatMoney(row.proposed_order.limit_price)}</Text>
+                <Num span c="dimmed">
+                  @ {formatMoney(row.proposed_order.limit_price)}
+                </Num>
               ) : null}
             </Group>
             <Group gap="sm">
-              <Badge variant="light" data-testid="approval-state">
+              <Badge variant="light" color={STATE_COLOR[row.state] ?? 'gray'} data-testid="approval-state">
                 {row.state}
               </Badge>
-              <Text size="xs" c="dimmed" data-testid="approval-ttl">
-                хугацаа: {formatUtc(row.expires_at)}
-              </Text>
+              <Num span size="xs" c="dimmed" data-testid="approval-ttl">
+                expires: {formatLocalDateTimeWithUtc(row.expires_at)}
+              </Num>
             </Group>
           </Group>
 
           <Text size="sm" c="dimmed" mb={4}>
             {row.proposed_order.provider} / {row.proposed_order.model} ·{' '}
-            {formatMoney(row.proposed_order.estimated_notional)}
+            <Num span c="dimmed" fw={600}>
+              {formatMoney(row.proposed_order.estimated_notional)}
+            </Num>
           </Text>
 
-          <Card withBorder padding="sm" mb="sm" bg="var(--mantine-color-default-hover)">
+          <Card withBorder padding="sm" mb="sm" bg="dark.6">
             <Text size="sm" fw={600} mb={4}>
-              Agent-ийн үндэслэл
+              Agent's rationale
             </Text>
             <Text size="sm" data-testid="approval-rationale">
               {row.proposed_order.rationale}
             </Text>
             <Group gap="xs" mt="xs">
               <Text size="xs" c="dimmed">
-                Цитат өгөгдөл ({row.proposed_order.grounded_in.length} tool call):
+                Cited evidence ({row.proposed_order.grounded_in.length} tool calls):
               </Text>
               {row.decision_id ? (
                 <Button
@@ -142,7 +155,7 @@ export function ApprovalsPage() {
                   leftSection={<IconExternalLink size={12} />}
                   data-testid="approval-evidence-link"
                 >
-                  түүхий payload харах
+                  view raw payload
                 </Button>
               ) : null}
             </Group>
@@ -159,7 +172,7 @@ export function ApprovalsPage() {
                 data-testid="approval-reject"
                 onClick={() => setRejecting(row)}
               >
-                Татгалзах
+                Reject
               </Button>
               <Button
                 color="green"
@@ -168,12 +181,15 @@ export function ApprovalsPage() {
                 data-testid="approval-approve"
                 onClick={() => approve.mutate(row)}
               >
-                Зөвшөөрөх
+                Approve
               </Button>
             </Group>
           ) : (
             <Text size="sm" c="dimmed" mt="sm" data-testid="approval-resolution">
-              {row.state} · {formatUtc(row.resolved_at)}
+              {row.state} ·{' '}
+              <Num span c="dimmed">
+                {formatLocalDateTimeWithUtc(row.resolved_at)}
+              </Num>
               {row.resolution_reason ? ` — ${row.resolution_reason}` : ''}
             </Text>
           )}
@@ -183,15 +199,15 @@ export function ApprovalsPage() {
       <Modal
         opened={rejecting !== null}
         onClose={() => setRejecting(null)}
-        title="Татгалзах"
+        title="Reject"
         data-testid="reject-modal"
       >
         <Stack gap="md">
           <Text size="sm">
-            Татгалзсан санал ХЭЗЭЭ Ч илгээгдэхгүй. Энэ үйлдэл буцаах боломжгүй.
+            A rejected proposal is NEVER submitted. This action cannot be undone.
           </Text>
           <Textarea
-            label="Шалтгаан"
+            label="Reason"
             required
             value={reason}
             data-testid="reject-reason"
@@ -199,7 +215,7 @@ export function ApprovalsPage() {
           />
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setRejecting(null)}>
-              Болих
+              Cancel
             </Button>
             <Button
               color="red"
@@ -207,13 +223,13 @@ export function ApprovalsPage() {
               data-testid="reject-confirm"
               onClick={() => rejecting && reject.mutate(rejecting)}
             >
-              Татгалзах
+              Reject
             </Button>
           </Group>
         </Stack>
       </Modal>
 
-      <Modal opened={error !== null} onClose={() => setError(null)} title="Алдаа">
+      <Modal opened={error !== null} onClose={() => setError(null)} title="Error">
         <Alert color="red" icon={<IconAlertTriangle size={18} />} data-testid="approvals-error">
           {error}
         </Alert>

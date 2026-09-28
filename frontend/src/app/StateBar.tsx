@@ -1,19 +1,21 @@
 /**
- * Төлөвийн самбар + гурван товч (T-51, LLD §16.2, §16.3, AC-38).
+ * State bar + three buttons (T-51, LLD §16.2, §16.3, AC-38).
  *
- * Гурван товч, гурван ӨӨР утга — өөр өнгө, өөр байрлал, өөр асуулт:
+ * Three buttons, three DIFFERENT meanings — different color, different
+ * position, different question:
  *
- * | Товч             | Өнгө / байрлал | Асуулт |
- * |------------------|----------------|--------|
- * | Зогсоо           | улаан, зүүн    | БАЙХГҮЙ — тэр дор нь ажиллана |
- * | Унтраах бэлтгэл  | шар, төв       | БАЙХГҮЙ — эрсдэл БУУРУУЛАХ үйлдэл |
- * | Идэвхжүүл        | ногоон, баруун | Backend-ийн `confirmation.prompt` |
+ * | Button           | Color / position | Question |
+ * |------------------|-------------------|----------|
+ * | Kill switch      | red, left         | NONE — fires immediately |
+ * | Wind down        | yellow, center     | NONE — a risk-REDUCING action |
+ * | Activate         | green, right       | Backend's `confirmation.prompt` |
  *
- * Баталгаажуулалт нь ЗӨВХӨН эрсдэл НЭМЭГДҮҮЛЭХ замд (§8.4-ийн гурван
- * үйлдэл). Wind-down нь kill switch-тэй нэг тал дээр: шинэ эрсдэл
- * нэмэхгүй, буруу дарвал `Идэвхжүүл`-ээр (баталгаажуулалттай) буцна.
- * Ингэснээр UI-д бодлогын текст хатуу кодлогдохгүй (§16.3) — үлдсэн
- * ганц асуулт нь backend-ийн 409 хариунаас ирнэ (N-6-ийн шийдэл).
+ * Confirmation applies ONLY to a risk-INCREASING path (one of §8.4's three
+ * actions). Wind-down is on the kill switch's side: it never adds new
+ * risk, and misclicking it can be reversed with `Activate` (which does
+ * confirm). This keeps policy text out of the UI (§16.3) — the one
+ * remaining question comes straight from the backend's 409 response
+ * (N-6's solution).
  */
 import { useState } from 'react';
 import { Badge, Button, Group, Modal, Stack, Text, Tooltip } from '@mantine/core';
@@ -23,11 +25,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, api, type SystemStateEnvelope } from '@/lib/api';
 import { formatCountdown } from '@/lib/money';
 import { systemStateKey } from '@/hooks/useSystemState';
+import { Num } from '@/components/Num';
 
 const STATE_BADGE = {
-  active: { color: 'green', label: 'ИДЭВХТЭЙ' },
-  winding_down: { color: 'yellow', label: 'ХААХ ЦОНХ' },
-  halted: { color: 'red', label: 'ЗОГССОН' },
+  active: { color: 'green', label: 'ACTIVE' },
+  winding_down: { color: 'yellow', label: 'WINDING DOWN' },
+  halted: { color: 'red', label: 'HALTED' },
 } as const;
 
 type Pending = { action: 'activate'; prompt: string; token?: string } | null;
@@ -48,7 +51,7 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
   });
 
   const windDown = useMutation({
-    mutationFn: () => api.windDown('Operator: удахгүй унтраана'),
+    mutationFn: () => api.windDown('Operator: shutting down soon'),
     onSuccess: refresh,
     onError: (err: Error) => setError(err.message),
   });
@@ -60,7 +63,7 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
       refresh();
     },
     onError: (err: Error) => {
-      // 409 `confirmation_required` нь АЛДАА БИШ — урсгалын дараагийн алхам.
+      // A 409 `confirmation_required` is NOT an error — it's the next flow step.
       if (err instanceof ApiError && err.code === 'confirmation_required' && err.confirmation) {
         setPending({
           action: 'activate',
@@ -86,19 +89,23 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
         justify="space-between"
         px="md"
         py={8}
-        style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
+        style={{
+          background: 'var(--mantine-color-dark-7)',
+          borderBottom: '1px solid var(--mantine-color-dark-5)',
+        }}
       >
-        {/* ЗҮҮН — Зогсоо. Асуулт БАЙХГҮЙ (AC-38). */}
+        {/* LEFT — kill switch. No confirmation (AC-38). */}
         <Button
           data-testid="kill-switch"
           color="red"
           variant="filled"
+          size="sm"
           leftSection={<IconPlayerStop size={16} />}
           loading={kill.isPending}
           disabled={busy}
           onClick={() => kill.mutate()}
         >
-          Зогсоо
+          Kill switch
         </Button>
 
         <Group gap="sm">
@@ -108,9 +115,9 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
             </Badge>
           ) : null}
           {current === 'winding_down' ? (
-            <Text size="sm" data-testid="wind-down-countdown">
-              Позиц хаах цонх · үлдсэн {formatCountdown(state?.seconds_remaining ?? null)}
-            </Text>
+            <Num size="sm" data-testid="wind-down-countdown">
+              Winding down · {formatCountdown(state?.seconds_remaining ?? null)} remaining
+            </Num>
           ) : null}
           {current === 'halted' && state?.reason ? (
             <Text size="sm" c="red.6" data-testid="halt-reason">
@@ -120,35 +127,37 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
         </Group>
 
         <Group gap="sm">
-          {/* ТӨВ — Унтраах бэлтгэл. */}
+          {/* CENTER — wind down. */}
           <Tooltip
-            label="Зогссон системийг wind-down хийх боломжгүй"
+            label="Cannot wind down a halted system"
             disabled={current !== 'halted'}
           >
             <Button
               data-testid="wind-down"
               color="yellow"
               variant="filled"
+              size="sm"
               leftSection={<IconMoon size={16} />}
               disabled={busy || current !== 'active'}
               loading={windDown.isPending}
               onClick={() => windDown.mutate()}
             >
-              Унтраах бэлтгэл
+              Wind down
             </Button>
           </Tooltip>
 
-          {/* БАРУУН — Идэвхжүүл. */}
+          {/* RIGHT — activate. */}
           <Button
             data-testid="activate"
             color="green"
             variant="filled"
+            size="sm"
             leftSection={<IconPlayerPlay size={16} />}
             loading={activate.isPending}
             disabled={busy || current === 'active'}
             onClick={() => activate.mutate(undefined)}
           >
-            Идэвхжүүл
+            Activate
           </Button>
         </Group>
       </Group>
@@ -156,7 +165,7 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
       <Modal
         opened={pending !== null}
         onClose={() => setPending(null)}
-        title="Идэвхжүүлэх"
+        title="Activate"
         data-testid="confirm-modal"
       >
         <Stack gap="md">
@@ -164,38 +173,38 @@ export function StateBar({ state }: { state: SystemStateEnvelope | undefined }) 
           <BreakerMetrics state={state} />
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setPending(null)}>
-              Болих
+              Cancel
             </Button>
             <Button
               data-testid="confirm-accept"
               color="green"
               onClick={() => activate.mutate(pending?.token)}
             >
-              Тийм
+              Yes
             </Button>
           </Group>
         </Stack>
       </Modal>
 
-      <Modal opened={error !== null} onClose={() => setError(null)} title="Алдаа">
+      <Modal opened={error !== null} onClose={() => setError(null)} title="Error">
         <Text data-testid="state-error">{error}</Text>
       </Modal>
     </>
   );
 }
 
-/** Идэвхжүүлэхийн өмнө breaker-ийн ОДООГИЙН хэмжилт (AC-37). */
+/** Breaker's CURRENT metrics, before activating (AC-37). */
 function BreakerMetrics({ state }: { state: SystemStateEnvelope | undefined }) {
   const metrics = state?.breaker_metrics ?? [];
   if (metrics.length === 0) return null;
   return (
     <Stack gap={4} data-testid="breaker-metrics">
       <Text size="sm" fw={600}>
-        Circuit breaker-ийн одоогийн метрик
+        Current circuit breaker metrics
       </Text>
       {metrics.map((metric) => {
-        // Хэмжигдээгүйг тоо мэт харуулах нь худал ногоон: operator
-        // «api_error_rate 0.0000 — хэвийн» гэж уншина (B-1, хавсралт 10).
+        // Showing "unmeasured" as a number is a false green: the operator
+        // would read "api_error_rate 0.0000 — normal" (B-1, appendix 10).
         const unmeasured = metric.value === 'unmeasured';
         return (
           <Text
@@ -204,9 +213,15 @@ function BreakerMetrics({ state }: { state: SystemStateEnvelope | undefined }) {
             data-testid={`breaker-metric-${metric.metric}`}
             c={metric.tripped ? 'red.6' : unmeasured ? 'orange.7' : 'dimmed'}
           >
-            {metric.metric}: {unmeasured ? 'ХЭМЖИГДЭЭГҮЙ' : metric.value} (хязгаар{' '}
-            {metric.limit_name} {metric.limit_value})
-            {metric.tripped ? ' — УНАСАН' : ''}
+            {metric.metric}:{' '}
+            <Num span size="xs" c="inherit">
+              {unmeasured ? 'UNMEASURED' : metric.value}
+            </Num>{' '}
+            (limit {metric.limit_name}{' '}
+            <Num span size="xs" c="inherit">
+              {metric.limit_value}
+            </Num>
+            ){metric.tripped ? ' — TRIPPED' : ''}
           </Text>
         );
       })}

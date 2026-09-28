@@ -1,11 +1,12 @@
 /**
- * N-5 · LLD §16.2, §19-ийн 14 дэх цэг — НЭГ хүснэгтэд ХОЁР `source` шошго
- * зэрэг харагдахгүй.
+ * N-5 · LLD §16.2, §19 point 14 — ONE table never shows TWO `source`
+ * labels at once.
  *
- * Backend талд хориг бий (`MixedSourceError`), гэхдээ tool call бүр өөрийн
- * `source`-той ирдэг тул хүснэгт өөрөө холимог болох боломжтой: live дуудалт
- * ба backtest дуудалт нэг шийдвэрийн дор. Тэр үед «аль нь бодит вэ» гэдэг
- * ойлгомжгүй болно — хамгийн аюултай хэлбэр нь ЯГ энэ (AC-21).
+ * The backend has a guard (`MixedSourceError`), but each tool call
+ * arrives with its own `source`, so a table can still end up mixed: a
+ * live call and a backtest call under one decision. At that point "which
+ * one is real" becomes ambiguous — this is EXACTLY the most dangerous
+ * case (AC-21).
  */
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -31,7 +32,7 @@ const feed = {
         symbol: 'AAPL',
         side: 'buy',
         qty: '10',
-        rationale: 'Сүүлийн үнэ 221.50 дээр орох санал.',
+        rationale: 'Proposing to enter at the last price of 221.50.',
         estimated_notional: '2215.00',
       },
     },
@@ -64,7 +65,7 @@ function renderWith(sources: string[], grounding: Record<string, unknown> = { pa
     vi.fn(
       mockFetch({
         [`/api/v1/agent-decisions/${DECISION_ID}`]: { body: detail },
-        // Жагсаалтын мөр нь дэлгэрэнгүйн эх сурвалж (grounding нь мөрөөс).
+        // The list row is the source of truth for the summary (grounding comes from the row).
         '/api/v1/agent-decisions': {
           body: { ...feed, decisions: [{ ...feed.decisions[0], grounding }] },
         },
@@ -74,14 +75,14 @@ function renderWith(sources: string[], grounding: Record<string, unknown> = { pa
   return renderWithProviders(<DecisionsPage />);
 }
 
-/** Мөрийг нээнэ — tool call хүснэгт нь задарсан панел дотор. */
+/** Opens a row — the tool call table is inside the expanded panel. */
 async function openDetail() {
   await waitFor(() => expect(screen.getByTestId('decision-row')).toBeInTheDocument());
   await userEvent.click(screen.getByTestId('decision-row'));
 }
 
-describe('DecisionsPage — tool call хүснэгтийн source', () => {
-  it('нэг source бол шошго нь хүснэгтэд НЭГ УДАА харагдана', async () => {
+describe('DecisionsPage — tool call table source', () => {
+  it('a single source shows its label ONCE for the whole table', async () => {
     renderWith(['alpaca_paper', 'alpaca_paper']);
     await openDetail();
     await waitFor(() => expect(screen.getAllByTestId('tool-call-row')).toHaveLength(2));
@@ -91,7 +92,7 @@ describe('DecisionsPage — tool call хүснэгтийн source', () => {
     expect(labels[0]).toHaveTextContent('alpaca_paper');
   });
 
-  it('шалгагч ажиллаагүй бол «унасан» ГЭЖ БИЧИХГҮЙ (N-3)', async () => {
+  it('a grounding check that did not run is NEVER labeled "failed" (N-3)', async () => {
     renderWith(['alpaca_paper'], {
       passed: false,
       not_run: true,
@@ -100,25 +101,25 @@ describe('DecisionsPage — tool call хүснэгтийн source', () => {
     });
     await openDetail();
     await waitFor(() => expect(screen.getByTestId('decision-grounding')).toBeInTheDocument());
-    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('ажиллаагүй');
-    expect(screen.getByTestId('decision-grounding')).not.toHaveTextContent('УНАСАН');
+    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('not run');
+    expect(screen.getByTestId('decision-grounding')).not.toHaveTextContent('FAILED');
   });
 
-  it('шалгасан тооны ТОО харагдана — 0 нь «дамжсан» гэж ногоон гарахгүй (N-4)', async () => {
+  it('shows the ACTUAL count checked — 0 does not render green as "passed" (N-4)', async () => {
     renderWith(['alpaca_paper'], { passed: true, unverified_claims: [], checked_claims: 0 });
     await openDetail();
     await waitFor(() => expect(screen.getByTestId('decision-grounding')).toBeInTheDocument());
-    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('0 тоо шалгав');
+    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('0 claims checked');
   });
 
-  it('шалгасан тоо олон бол мөн ил', async () => {
+  it('a larger checked count is shown too', async () => {
     renderWith(['alpaca_paper'], { passed: true, unverified_claims: [], checked_claims: 12 });
     await openDetail();
     await waitFor(() => expect(screen.getByTestId('decision-grounding')).toBeInTheDocument());
-    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('12 тоо шалгав');
+    expect(screen.getByTestId('decision-grounding')).toHaveTextContent('12 claims checked');
   });
 
-  it('холимог source бол хүснэгт ХАРАГДАХГҮЙ, ил анхааруулга гарна', async () => {
+  it('a mixed source hides the table and shows an explicit warning', async () => {
     renderWith(['alpaca_paper', 'backtest']);
     await openDetail();
     await waitFor(() => expect(screen.getByTestId('mixed-source')).toBeInTheDocument());

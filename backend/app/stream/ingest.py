@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import models
 from app.broker.models import Origin, OrderStatus, TradeUpdate
 from app.risk import breaker
-from app.stream.bus import CHANNEL_ORDERS, CHANNEL_SYSTEM, EventBus
+from app.stream.bus import CHANNEL_ORDERS, CHANNEL_SYSTEM, CHANNEL_TICKS, EventBus
 from app.util.time import now_utc, to_iso
 
 #: Дахин холбогдох хүлээлт: 0.5s → 1s → 2s → … дээд хязгаартай.
@@ -35,6 +35,9 @@ BACKOFF_MAX_SECONDS = 30.0
 
 #: Alpaca-ийн статусаас «биелэлт» гэж үзэх нь.
 FILL_EVENTS = ("fill", "partial_fill")
+
+#: Order-ын эцсийн төлөвүүд — эдгээрийн дараа ширхэг өөрчлөгдөхгүй.
+TERMINAL_STATUSES = (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.EXPIRED)
 
 
 def backoff_delay(attempt: int) -> float:
@@ -145,8 +148,21 @@ class TradeUpdateIngestor:
         row.filled_qty = update.filled_qty
         if row.broker_order_id is None:
             row.broker_order_id = update.broker_order_id
-        if update.status is OrderStatus.FILLED and row.filled_at is None:
-            row.filled_at = update.ts
+        # Хэсэгчлэн биелээд `canceled`/`expired` болсон order нь БОДИТ ширхэг,
+        # БОДИТ үнээр хаагдсан — мөнгө гарсан. Зөвхөн `filled`-ыг бичвэл нимгэн
+        # ликвидтэй үед (stop-loss яг тэр үед хэсэгчлэн биелдэг) алдагдал
+        # ledger-т орохгүй үлдэж, модель зөвхөн ялалтаас суралцана.
+        if update.status in TERMINAL_STATUSES and update.filled_qty > 0:
+            if row.filled_at is None:
+                row.filled_at = update.ts
+            # `realized_pl`-ын ЦОРЫН ГАНЦ бичигч энэ. Тиймээс `realized_pl IS
+            # NOT NULL` нь «биелэлт болсон» гэсэн үг — таамаг хэзээ ч биш.
+            if row.entry_price is not None and update.filled_avg_price is not None:
+                row.realized_pl = (
+                    (update.filled_avg_price - row.entry_price)
+                    * update.filled_qty
+                    * (1 if row.side == "sell" else -1)
+                )
 
         if update.event in FILL_EVENTS and update.filled_avg_price is not None:
             await self._record_fill(session, row, update)
@@ -175,9 +191,16 @@ class TradeUpdateIngestor:
             models.Fill(
                 order_id=row.id,
                 broker_fill_id=fill_id,
-                qty=update.filled_qty,
+                # Энэ мөр = ЭНЭ биелэлт. Нийлбэр/дундажаар бичвэл 3+7 нь
+                # 3, 10 болж түүх гажна. Хуучин payload-д л cumulative руу унана.
+                # ponytail: fix it or delete the table — a write-only table nobody reads is the third option and it is the worst one.
+                qty=update.fill_qty if update.fill_qty is not None else update.filled_qty,
                 # AC-1: Alpaca-ийн мэдээлсэн үнэ. qty × price ХЭЗЭЭ Ч энд биш.
-                price=update.filled_avg_price or Decimal("0"),
+                price=(
+                    update.fill_price
+                    if update.fill_price is not None
+                    else update.filled_avg_price or Decimal("0")
+                ),
                 filled_at=update.ts,
                 raw=update.raw,
             )
@@ -220,25 +243,103 @@ class TradeUpdateIngestor:
         Тасалдал бүр `ws_disconnect` болж бичигдэнэ. `max_cycles` нь тестэд —
         prod-д `None` (хязгааргүй).
         """
-        attempt = 0
-        cycles = 0
-        while max_cycles is None or cycles < max_cycles:
-            cycles += 1
-            stream = None
-            try:
-                stream = self.broker.stream_trade_updates()
-                await self.consume(stream)
-                attempt = 0
-            except Exception:
-                async with self.sessionmaker() as session:
+        return await _run_stream_forever(
+            self.sessionmaker,
+            self.monitor,
+            self.broker.stream_trade_updates,
+            self.consume,
+            max_cycles=max_cycles,
+        )
+
+
+class MarketDataIngestor:
+    """Alpaca-ийн crypto trade WS → `ticks:{symbol}` суваг (T-99, хувийн
+    төсөл — 5 минутын REST poll-ыг хүлээхгүйн тулд).
+
+    `frontend/src/lib/ws.ts`-ийн зарчмыг зөрчихгүй: UI state ЭНЭ payload-аас
+    шууд баригдахгүй, зөвхөн REST query-г ХЭЗЭЭ дахин татахыг хурдасгана
+    (`invalidateQueries`, `orders`/`agent-decisions`-тэй ЯГ адил зам).
+    """
+
+    def __init__(
+        self,
+        sessionmaker,
+        broker,
+        bus: EventBus,
+        monitor: StalenessMonitor,
+        symbols: list[str],
+    ) -> None:
+        self.sessionmaker = sessionmaker
+        self.broker = broker
+        self.bus = bus
+        self.monitor = monitor
+        self.symbols = symbols
+
+    async def consume(self, stream) -> int:
+        count = 0
+        async for tick in stream:
+            self.monitor.touch(CHANNEL_TICKS)
+            # Alpaca-ийн `/v2/positions` нь crypto-с `/`-г хасдаг
+            # (`exits.py`/`attribution.py`-тэй ЯГ адил ажиглалт) —
+            # frontend-ийн `['bars', position.symbol]` query key-тэй
+            # тааруулахын тулд энд normalize хийнэ.
+            symbol = tick.symbol.replace("/", "")
+            await self.bus.publish(
+                f"{CHANNEL_TICKS}:{symbol}",
+                {"event": "tick", "symbol": symbol, "price": str(tick.price), "ts": to_iso(tick.ts)},
+            )
+            count += 1
+        return count
+
+    async def run_forever(self, *, max_cycles: int | None = None) -> int:
+        # `record_disconnect=False`: энэ бол ЗӨВХӨН UI-г хурдасгах туслах
+        # урсгал (T-99) — trade_updates шиг order-ын төлөв барихгүй. Ижил
+        # `ws_disconnect` метрикт хольж халуулбал (эмпирикээр батлагдсан:
+        # энэ урсгал тогтворгүй үед РЕАЛ арилжааг зогсоов) нэг талын
+        # алдаа нөгөө талын аюулгүй байдлыг үгүйсгэнэ.
+        return await _run_stream_forever(
+            self.sessionmaker,
+            self.monitor,
+            lambda: self.broker.stream_market_data(self.symbols),
+            self.consume,
+            max_cycles=max_cycles,
+            record_disconnect=False,
+        )
+
+
+async def _run_stream_forever(
+    sessionmaker,
+    monitor: StalenessMonitor,
+    open_stream,
+    consume,
+    *,
+    max_cycles: int | None = None,
+    record_disconnect: bool = True,
+) -> int:
+    """Дахин холболтын нийтлэг мөчлөг. `record_disconnect=True` (`
+    TradeUpdateIngestor`-ийн анхдагч) үед л `ws_disconnect` breaker метрикт
+    бичигдэнэ — order-ын төлөв барьдаг урсгал тасрах нь ЖИНХЭНЭ эрсдэл
+    (LLD §15.2). Туслах урсгалууд (`MarketDataIngestor`) үүнийг унтраана."""
+    attempt = 0
+    cycles = 0
+    while max_cycles is None or cycles < max_cycles:
+        cycles += 1
+        stream = None
+        try:
+            stream = open_stream()
+            await consume(stream)
+            attempt = 0
+        except Exception:
+            if record_disconnect:
+                async with sessionmaker() as session:
                     await breaker.record(session, "ws_disconnect", ok=False)
                     await session.commit()
-            finally:
-                # Мөчлөг ямар ч замаар дуусахад урсгалыг ХААНА. Үүнгүйгээр
-                # эвдэрсэн холболт бүр хаагдаагүй generator/coroutine үлдээж,
-                # дахин холболтын зам нөөц алдана.
-                await _close(stream)
-            await self.monitor.sweep()
-            await asyncio.sleep(backoff_delay(attempt))
-            attempt += 1
-        return cycles
+        finally:
+            # Мөчлөг ямар ч замаар дуусахад урсгалыг ХААНА. Үүнгүйгээр
+            # эвдэрсэн холболт бүр хаагдаагүй generator/coroutine үлдээж,
+            # дахин холболтын зам нөөц алдана.
+            await _close(stream)
+        await monitor.sweep()
+        await asyncio.sleep(backoff_delay(attempt))
+        attempt += 1
+    return cycles

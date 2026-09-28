@@ -141,3 +141,29 @@ async def post_activate(
     )
     request.app.state.current_state = row.state
     return await state_body(request, machine, session)
+
+
+@router.post("/system/reconcile-now", operation_id="postSystemReconcileNow")
+async def post_reconcile_now(request: Request, machine: StateMachineDep, session: SessionDep):
+    """`reconcile_eod`-ийг ГАРААР, ХҮЛЭЭЛГҮЙГЭЭР дуудна (хувийн төсөл, T-99).
+
+    `reconcile_eod` нь `CronTrigger`-т суурилсан бөгөөд jobstore-гүй (санах
+    ойд л): process ДАХИН ЭХЛЭХ бүрт хуваарь дахин тооцогдоно — тухайн
+    fire-цагийг өнгөрөөсөн restart нь ямар ч "catch up" хийхгүй. WS
+    ингестийн алдсан fill-ийг маргааш хүртэл хүлээхгүйгээр ЯГ ОДОО засах
+    товч энд.
+    """
+    from app.broker.reconcile import reconcile
+
+    report = await reconcile(
+        session,
+        request.app.state.broker,
+        settings=request.app.state.settings,
+        publisher=request.app.state.publish_system,
+    )
+    state = await machine.current()
+    return envelope(
+        report.to_json(),
+        source=current_source(request),
+        system_state=state.state,
+    )

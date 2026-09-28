@@ -25,12 +25,14 @@ from sqlalchemy import select
 from app import models
 from app.agents.gateway import ToolError
 from app.agents.grounding import check as check_grounding
-from app.api.attribution import EXTERNAL, position_origins
+from app.api.attribution import EXTERNAL, _normalize as _normalize_symbol, position_origins
 from app.audit.chain import AuditChain
 from app.api.envelope import money_field, qty_field
 from app.api.risk_context import build as build_risk_context
 from app.approvals.queue import create_approval
+from app.broker.alpaca import is_crypto_symbol
 from app.broker.models import (
+    BrokerRejected,
     BrokerUnavailable,
     Origin,
     OrderIntent,
@@ -47,10 +49,21 @@ from app.stream.bus import CHANNEL_DECISIONS, CHANNEL_SYSTEM
 from app.tuning.whitelist import bounds_json, lookup
 from app.util.time import now_utc, to_iso
 
+#: Crypto-д Alpaca зөвшөөрдөг ЦОРЫН ГАНЦ TIF-үүд. Бусад нь 422.
+CRYPTO_TIF = frozenset({"gtc", "ioc"})
+
+#: Тоон нотолгоо болж БОЛОХ tool-ууд (`grounded_in`-д иш татахад). `get_news`
+#: ЭНД БАЙХГҮЙ: гарчиг дахь үнэ, нийтлэлийн id/цаг нь санамсаргүйгээр
+#: rationale-ийн тоог «баталж» чадна — мэдээ бол чиглэл, нотолгоо биш.
+NUMERIC_EVIDENCE_TOOLS = frozenset(
+    {"get_account", "get_positions", "get_quote", "get_bars"}
+)
+
 STAGE_GROUNDING_FAILED = "grounding_failed"
 STAGE_RISK_REJECTED = "risk_rejected"
 STAGE_AWAITING_APPROVAL = "awaiting_approval"
 STAGE_APPROVED = "approved_for_execution"
+STAGE_ORDER_FAILED = "order_failed"
 
 #: `agent_decisions.outcome` — contracts.yaml-ийн enum.
 OUTCOME_FOR_STAGE = {
@@ -58,6 +71,7 @@ OUTCOME_FOR_STAGE = {
     STAGE_RISK_REJECTED: "risk_rejected",
     STAGE_AWAITING_APPROVAL: "awaiting_approval",
     STAGE_APPROVED: "executed",
+    STAGE_ORDER_FAILED: "order_failed",
 }
 
 
@@ -149,6 +163,24 @@ async def get_bars(ctx: ToolContext, args: dict) -> dict:
     return {"symbol": symbol, "timeframe": args["timeframe"], "bars": bars}
 
 
+async def get_news(ctx: ToolContext, args: dict) -> dict:
+    """Мэдээ — чиглэл өгөх контекст, `grounded_in`-д ХЭЗЭЭ Ч тоон нотолгоо
+    болохгүй: `_cited_payloads` нь `NUMERIC_EVIDENCE_TOOLS`-оор шүүдэг тул
+    энэ payload дахь тоо grounding-д ОГТ хүрэхгүй."""
+    getter = getattr(ctx.broker, "get_news", None)
+    if getter is None:
+        raise ToolError("no_data", "мэдээний эх сурвалж тохируулаагүй")
+    symbols = args.get("symbols")
+    limit = int(args.get("limit", 10))
+    try:
+        news = await getter(symbols, limit)
+    except BrokerUnavailable as exc:
+        raise ToolError("unreachable", str(exc)) from exc
+    if not news:
+        raise ToolError("no_data", "тухайн симбол(ууд)-д мэдээ олдсонгүй")
+    return {"news": news}
+
+
 async def get_backtest_result(ctx: ToolContext, args: dict) -> dict:
     """`source` нь `backtest` — энэ өгөгдлийг live гэж ХЭЗЭЭ Ч тайлбарлахгүй."""
     runner = getattr(ctx, "backtester", None)
@@ -174,12 +206,82 @@ def _decimal(value, field: str) -> Decimal | None:
         raise ToolError("no_data", f"{field}: тоон утга биш — {value!r}") from exc
 
 
-async def _cited_payloads(session, session_id: str, ids: list[str]) -> tuple[list, list[str]]:
+def _same_symbol(value: Any, symbol: str) -> bool:
+    # `BTC/USD` ба `BTCUSD` нь НЭГ symbol (attribution._normalize-тай ижил зарчим).
+    return _normalize_symbol(str(value or "")).upper() == _normalize_symbol(symbol).upper()
+
+
+def _mentions_other_symbol(node: Any, symbol: str) -> bool:
+    """Бүтцийн ЯМАР Ч гүнд энэ саналынхаас ӨӨР symbol дурдагдсан эсэх.
+
+    Зөвхөн дээд түвшний `symbol`/`positions`-ыг шалгавал дараагийн tool-ийн
+    өөр бүтэц (жишээ нь `{"quotes": [...]}`) шүүлтээс чөлөөтэй өнгөрнө —
+    яг тэр «өөр хаалга» гурван удаа давтагдсан.
+    """
+    if isinstance(node, dict):
+        if "symbol" in node and not _same_symbol(node["symbol"], symbol):
+            return True
+        return any(_mentions_other_symbol(v, symbol) for v in node.values())
+    if isinstance(node, list):
+        return any(_mentions_other_symbol(v, symbol) for v in node)
+    return False
+
+
+def _narrowed(payload: Any, symbol: str) -> Any | None:
+    """Цитат payload-оос ЭНЭ саналын symbol-д БАТЛАГДСАН хэсгийг л буцаана.
+
+    Дүрэм нь ХААЛТТАЙ УНАНА: «өөр symbol-ынхыг хас» БИШ, «энэ symbol-ынх
+    гэж батлагдсаныг л оруул». Тиймээс амжилтгүй дуудлага (`ok: false`,
+    `data: null`), dict биш `data`, эсвэл дотроо өөр symbol дурдсан аливаа
+    бүтэц `None` — нотолгоонд ОГТ орохгүй. Амжилтгүй tool call-д хууль ёсны
+    тоон нотолгоо БАЙХГҮЙ (тэр хаалга `_cited_payloads`-д БАС бий: symbol
+    дамжуулаагүй зам энэ функц хүртэл ирэхгүй).
+
+    Зөвхөн `data` буцна: `error`-ийн мессеж, `tool_call_id` зэрэг бүрхүүлийн
+    тоо (алдаанд бичигдсэн үнэ, uuid доторх орон) нотолгоо биш.
+
+    Цитатыг ХЭН бүрдүүлснээс (модель гараар бичсэн ч, runner нөхсөн ч) үл
+    хамааран энд шүүгдэнэ (T-99).
+    """
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("positions"), list):
+        data = {
+            **data,
+            "positions": [
+                p
+                for p in data["positions"]
+                if isinstance(p, dict) and _same_symbol(p.get("symbol"), symbol)
+            ],
+        }
+    # symbol-гүй бүтэц (`get_account`-ийн данс хэмжигдэхүүн) нь аль ч
+    # symbol-д хамаарна — тэр нь ганц үлдэх өнгөрөх зам.
+    return None if _mentions_other_symbol(data, symbol) else data
+
+
+async def _cited_payloads(
+    session,
+    session_id: str,
+    ids: list[str],
+    allowed: frozenset[str] | None = None,
+    symbol: str | None = None,
+) -> tuple[list, list[str]]:
     """Цитат tool call-уудыг УНШИНА. Олдоогүй id нь ил алдаа.
 
     Зөв тоо + буруу `tool_call_id` нь хамгийн зальтай тохиолдол: тоо нь
     «байгаа» ч энэ санал түүнийг ХАРААГҮЙ. Тиймээс олдоогүй цитат нь
     grounding-ийг унагана (adversarial suite, T-24).
+
+    `allowed` нь тоон нотолгоонд зөвшөөрөгдсөн tool-ийн нэрс. Бусад tool-ийн
+    цитат нь АЛДАА биш (мэдээ иш татах нь зүйтэй), зүгээр л haystack-д
+    ОРОХГҮЙ — иймд тэнд л байгаа тоо мэдэгдлийг батлахгүй.
+
+    `symbol` өгвөл payload бүр `_narrowed`-ээр дамжина: энэ бол ГАДААД
+    model аль ч замаар (Anthropic content block, local tool_calls) ирсэн
+    цитатад ижилхэн үйлчилдэг цорын ганц газар.
     """
     found: list = []
     missing: list[str] = []
@@ -193,7 +295,19 @@ async def _cited_payloads(session, session_id: str, ids: list[str]) -> tuple[lis
         if row is None or row.session_id != session_id:
             missing.append(str(raw))
             continue
-        found.append(row.response)
+        if allowed is not None and row.tool_name not in allowed:
+            continue
+        payload = row.response
+        # Амжилтгүй дуудлагын хаалга ЭНД — бүх зам дамждаг цорын ганц газар.
+        # `_narrowed` дотор байхад `symbol`-гүй зам (`propose_tuning_change`)
+        # түүнийг бүхэлд нь тойроод `{ok: false, data: null}` мөрийг
+        # «нотолгоо» гэж тоолж байв (ROOT CAUSE F, өөр хаалга).
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            continue
+        if symbol is not None:
+            payload = _narrowed(payload, symbol)
+        if payload is not None:
+            found.append(payload)
     return found, missing
 
 
@@ -264,6 +378,12 @@ async def _record_decision(
 async def propose_order(ctx: ToolContext, args: dict) -> dict:
     """САНАЛ үүсгэнэ. ORDER ИЛГЭЭХГҮЙ (INV-1)."""
     symbol = str(args["symbol"]).upper()
+    # Crypto-д Alpaca `day`-г 422-оор ТАТГАЛЗАНА. SYSTEM_PROMPT үүнийг том
+    # үсгээр хэлдэг ч сул model үл тоомсорлож, татгалзлын хувь нь breaker-ийг
+    # асаасан. Prompt бол хяналт биш — боломжгүй утгыг ЧИМЭЭГҮЙ засна.
+    time_in_force = args.get("time_in_force", "day")
+    if is_crypto_symbol(symbol) and time_in_force not in CRYPTO_TIF:
+        time_in_force = "gtc"
     proposal = {
         "symbol": symbol,
         "side": args["side"],
@@ -271,7 +391,7 @@ async def propose_order(ctx: ToolContext, args: dict) -> dict:
         "order_type": args["order_type"],
         "limit_price": args.get("limit_price"),
         "stop_price": args.get("stop_price"),
-        "time_in_force": args.get("time_in_force", "day"),
+        "time_in_force": time_in_force,
         "rationale": args["rationale"],
         "grounded_in": list(args["grounded_in"]),
         "provider": ctx.provider_id,
@@ -282,7 +402,7 @@ async def propose_order(ctx: ToolContext, args: dict) -> dict:
         side=OrderSide(args["side"]),
         qty=_decimal(args["qty"], "qty"),
         order_type=OrderType(args["order_type"]),
-        time_in_force=TimeInForce(args.get("time_in_force", "day")),
+        time_in_force=TimeInForce(time_in_force),
         limit_price=_decimal(args.get("limit_price"), "limit_price"),
         stop_price=_decimal(args.get("stop_price"), "stop_price"),
     )
@@ -313,7 +433,11 @@ async def propose_order(ctx: ToolContext, args: dict) -> dict:
 
     # 2) Grounding. Унавал Risk хүртэл ОЧИХГҮЙ (§13).
     payloads, missing = await _cited_payloads(
-        ctx.session, ctx.session_id, proposal["grounded_in"]
+        ctx.session,
+        ctx.session_id,
+        proposal["grounded_in"],
+        NUMERIC_EVIDENCE_TOOLS,
+        symbol=symbol,
     )
     grounding = check_grounding(
         args["rationale"], payloads, tolerance=ctx.settings.GROUNDING_TOLERANCE
@@ -422,13 +546,25 @@ async def propose_order(ctx: ToolContext, args: dict) -> dict:
         risk=risk_json,
         outcome=OUTCOME_FOR_STAGE[STAGE_APPROVED],
     )
-    order = await agent.submit(
-        evaluation.validated_order,
-        origin=Origin.RESEARCH_AGENT,
-        origin_detail=f"{ctx.provider_id}/{ctx.model}",
-        decision_id=decision.id,
-        actor=f"agent:{ctx.agent}",
-    )
+    try:
+        order = await agent.submit(
+            evaluation.validated_order,
+            origin=Origin.RESEARCH_AGENT,
+            origin_detail=f"{ctx.provider_id}/{ctx.model}",
+            decision_id=decision.id,
+            actor=f"agent:{ctx.agent}",
+        )
+    except (BrokerRejected, BrokerUnavailable) as exc:
+        # Нэг татгалзал (wash trade, buying power) БҮХ scan-ыг унагаах ёсгүй —
+        # энэ нь tool-ийн хариу, цикл цааш үргэлжилнэ.
+        decision.outcome = OUTCOME_FOR_STAGE[STAGE_ORDER_FAILED]
+        await ctx.session.commit()
+        return {
+            "decision_id": str(decision.id),
+            "accepted": False,
+            "stage": STAGE_ORDER_FAILED,
+            "reason": str(exc),
+        }
     decision.order_id = order.id
     await ctx.session.commit()
     return {
@@ -482,7 +618,9 @@ async def propose_tuning_change(ctx: ToolContext, args: dict) -> dict:
         ctx.session, ctx.session_id, [args["backtest_evidence"]]
     )
     if missing or not payloads:
-        raise ToolError("no_data", "backtest_evidence нь бодит tool call-д заагаагүй")
+        raise ToolError(
+            "no_data", "backtest_evidence нь АМЖИЛТТАЙ бодит tool call-д заагаагүй"
+        )
     return {
         "parameter": parameter,
         "new_value": str(value),
@@ -498,6 +636,7 @@ HANDLERS = {
     "get_positions": get_positions,
     "get_quote": get_quote,
     "get_bars": get_bars,
+    "get_news": get_news,
     "get_backtest_result": get_backtest_result,
     "get_tuning_bounds": get_tuning_bounds,
     "propose_order": propose_order,

@@ -1,9 +1,9 @@
 /**
  * Agent Activity Log (T-32, LLD §16.6, AC-7, AC-8).
  *
- * Мөр бүр **ТҮҮХИЙ tool call payload** руу задарна. Хураангуй БАЙХГҮЙ:
- * «AI яагаад ингэж хэлсэн бэ» гэдгийн хариу нь дүгнэлт биш, ӨГӨГДӨЛ.
- * Хураангуйлбал operator-т модельд итгэхээс өөр сонголт үлдэхгүй.
+ * Every row expands into the **RAW tool call payload**. No summarizing:
+ * the answer to "why did the AI say this" is DATA, not a conclusion.
+ * Summarizing would leave the operator no choice but to trust the model.
  */
 import { useState } from 'react';
 import {
@@ -26,8 +26,9 @@ import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 
 import { api, type AgentDecision } from '@/lib/api';
-import { formatMoney, formatQuantity, formatUtc } from '@/lib/money';
+import { formatLocalDateTimeWithUtc, formatMoney, formatQuantity } from '@/lib/money';
 import { distinctSources } from '@/lib/source';
+import { Num } from '@/components/Num';
 
 const OUTCOME_COLOR: Record<string, string> = {
   executed: 'green',
@@ -60,40 +61,42 @@ export function DecisionsPage() {
 
   return (
     <Stack gap="md">
-      <Title order={3}>Шийдвэрийн лог</Title>
+      <Title order={3}>Decision log</Title>
 
-      <Group>
-        <TextInput
-          label="Symbol"
-          placeholder="бүгд"
-          value={symbol}
-          data-testid="decisions-symbol"
-          onChange={(e) => {
-            const next = e.currentTarget.value.toUpperCase();
-            setParams(next ? { symbol: next } : {});
-          }}
-        />
-        <Select
-          label="Үр дүн"
-          placeholder="бүгд"
-          clearable
-          data={Object.keys(OUTCOME_COLOR)}
-          value={outcome}
-          data-testid="decisions-outcome"
-          onChange={setOutcome}
-        />
-        <TextInput
-          label="Provider"
-          placeholder="бүгд"
-          value={provider ?? ''}
-          data-testid="decisions-provider"
-          onChange={(e) => setProvider(e.currentTarget.value || null)}
-        />
-      </Group>
+      <Card withBorder padding="sm" bg="dark.7">
+        <Group>
+          <TextInput
+            label="Symbol"
+            placeholder="all"
+            value={symbol}
+            data-testid="decisions-symbol"
+            onChange={(e) => {
+              const next = e.currentTarget.value.toUpperCase();
+              setParams(next ? { symbol: next } : {});
+            }}
+          />
+          <Select
+            label="Outcome"
+            placeholder="all"
+            clearable
+            data={Object.keys(OUTCOME_COLOR)}
+            value={outcome}
+            data-testid="decisions-outcome"
+            onChange={setOutcome}
+          />
+          <TextInput
+            label="Provider"
+            placeholder="all"
+            value={provider ?? ''}
+            data-testid="decisions-provider"
+            onChange={(e) => setProvider(e.currentTarget.value || null)}
+          />
+        </Group>
+      </Card>
 
       {rows.length === 0 ? (
         <Alert color="gray" data-testid="decisions-empty">
-          Энэ шүүлтэд тохирох шийдвэр алга.
+          No decisions match this filter.
         </Alert>
       ) : null}
 
@@ -107,7 +110,12 @@ export function DecisionsPage() {
                   <Badge color={row.proposal.side === 'buy' ? 'green' : 'orange'} variant="light">
                     {row.proposal.side}
                   </Badge>
-                  <Text size="sm">{formatQuantity(row.proposal.qty)} ш</Text>
+                  <Text size="sm">
+                    <Num span size="sm">
+                      {formatQuantity(row.proposal.qty)}
+                    </Num>{' '}
+                    shares
+                  </Text>
                   <Badge color={OUTCOME_COLOR[row.outcome] ?? 'gray'} data-testid="decision-outcome">
                     {row.outcome}
                   </Badge>
@@ -116,9 +124,9 @@ export function DecisionsPage() {
                   <Text size="xs" c="dimmed">
                     {row.provider} / {row.model}
                   </Text>
-                  <Text size="xs" c="dimmed">
-                    {formatUtc(row.created_at)}
-                  </Text>
+                  <Num span size="xs" c="dimmed">
+                    {formatLocalDateTimeWithUtc(row.created_at)}
+                  </Num>
                 </Group>
               </Group>
             </Accordion.Control>
@@ -137,22 +145,25 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
     queryKey: ['decision', decision.id],
     queryFn: () => api.decision(decision.id),
   });
-  // Нэг хүснэгт = нэг source (N-5). Шошгыг мөр бүрд давтахгүй: давталт нь
-  // холимгийг далдалдаг — нүд нь ялгааг олохгүй.
+  // One table = one source (N-5). Don't repeat the label per row: repetition
+  // hides a mix — the eye won't catch the difference.
   const sources = distinctSources((data?.tool_calls ?? []).map((call) => call.source));
 
   return (
     <Stack gap="sm">
       <Card withBorder padding="sm">
         <Text size="sm" fw={600} mb={4}>
-          Үндэслэл
+          Rationale
         </Text>
         <Text size="sm" data-testid="decision-rationale">
           {decision.proposal.rationale}
         </Text>
         {decision.proposal.estimated_notional ? (
           <Text size="xs" c="dimmed" mt={4}>
-            Тооцоолсон notional: {formatMoney(decision.proposal.estimated_notional)}
+            Estimated notional:{' '}
+            <Num span size="xs" c="dimmed">
+              {formatMoney(decision.proposal.estimated_notional)}
+            </Num>
           </Text>
         ) : null}
       </Card>
@@ -163,25 +174,26 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
           data-testid="decision-grounding"
         >
           <Text size="sm" fw={600}>
-            Үндэслэлийн шалгалт:{' '}
-            {/* «Ажиллаагүй» нь «унасан» БИШ — хоёрыг нэг үгээр нэрлэвэл
-                шалгагдаагүйг шалгагдсан мэт харуулна (хавсралт 10). */}
+            Grounding check:{' '}
+            {/* "Not run" is NOT the same as "failed" — calling both by
+                the same word makes an unchecked claim look checked (appendix 10). */}
             {decision.grounding.not_run
-              ? 'ажиллаагүй (санал эрт татгалзсан)'
+              ? 'not run (proposal rejected earlier)'
               : decision.grounding.passed
-                ? 'дамжсан'
-                : 'УНАСАН'}
+                ? 'passed'
+                : 'FAILED'}
           </Text>
-          {/* Шалгасан тооны ТОО. «0 тоо шалгав» ба «12 тоо шалгав» хоёр
-              ижилхэн ногоон харагдах нь шалгаагүйг шалгасан мэт болгоно (N-4). */}
+          {/* The actual COUNT of claims checked. "0 claims checked" and
+              "12 claims checked" looking identically green would make an
+              unchecked claim look checked (N-4). */}
           {decision.grounding.not_run ? null : (
             <Text size="xs" c="dimmed" data-testid="grounding-checked-claims">
-              {decision.grounding.checked_claims ?? 0} тоо шалгав
+              {decision.grounding.checked_claims ?? 0} claims checked
             </Text>
           )}
           {(decision.grounding.unverified_claims ?? []).length > 0 ? (
             <Text size="sm">
-              Цитат өгөгдөлд ОЛДООГҮЙ тоо:{' '}
+              Claims NOT found in cited evidence:{' '}
               {(decision.grounding.unverified_claims ?? []).join(', ')}
             </Text>
           ) : null}
@@ -191,7 +203,7 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
       <Card withBorder padding="sm">
         <Group justify="space-between" mb="xs">
           <Text size="sm" fw={600}>
-            Иш татсан tool call — ТҮҮХИЙ payload
+            Cited tool calls — RAW payload
           </Text>
           {sources.length === 1 ? (
             <Badge variant="light" color="gray" data-testid="tool-calls-source">
@@ -202,16 +214,16 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
         {isLoading ? <Loader size="sm" /> : null}
         {sources.length > 1 ? (
           <Alert color="red" data-testid="mixed-source">
-            Энэ хүснэгтэд ХОЛИМОГ source байна ({sources.join(', ')}) — аль нь бодит
-            өгөгдөл болох нь ойлгомжгүй тул харуулахгүй (LLD §16.2).
+            This table has a MIXED source ({sources.join(', ')}) — which one is
+            real data is ambiguous, so it isn't shown (LLD §16.2).
           </Alert>
         ) : (
         <Table data-testid="tool-calls-table">
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Tool</Table.Th>
-              <Table.Th>Цаг</Table.Th>
-              <Table.Th>Хүсэлт / хариу</Table.Th>
+              <Table.Th>Time</Table.Th>
+              <Table.Th>Request / response</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -223,14 +235,14 @@ function DecisionDetail({ decision }: { decision: AgentDecision }) {
                   </Text>
                 </Table.Td>
                 <Table.Td>
-                  <Text size="xs">{formatUtc(call.called_at)}</Text>
-                  <Text size="xs" c="dimmed">
+                  <Num size="xs">{formatLocalDateTimeWithUtc(call.called_at)}</Num>
+                  <Num size="xs" c="dimmed">
                     {call.latency_ms ?? '—'} ms
-                  </Text>
+                  </Num>
                 </Table.Td>
                 <Table.Td>
                   <ScrollArea.Autosize mah={220}>
-                    <Code block data-testid="tool-call-payload">
+                    <Code block fz="sm" data-testid="tool-call-payload">
                       {JSON.stringify({ request: call.request, response: call.response }, null, 2)}
                     </Code>
                   </ScrollArea.Autosize>

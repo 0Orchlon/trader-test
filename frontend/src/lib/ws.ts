@@ -1,9 +1,9 @@
 /**
- * WebSocket клиент (asyncapi, LLD §16.1).
+ * WebSocket client (asyncapi, LLD §16.1).
  *
- * **WS нь үнэний эх сурвалж БИШ.** REST нь эх сурвалж; WS нь зөвхөн
- * invalidation + шууд харагдах tick. WS мессежээс UI-ийн төлөвийг шууд
- * угсарвал тасалдлын дараа зөрүү үүснэ.
+ * **WS is NOT the source of truth.** REST is the source; WS is only for
+ * invalidation + a live tick. Building UI state directly from WS messages
+ * would drift after any disconnect.
  */
 export type BusMessage = { channel: string; payload: Record<string, unknown> };
 
@@ -26,7 +26,7 @@ export function retryDelay(attempt: number): number {
   return Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** attempt);
 }
 
-/** Дахин холбогдох давталттай холболт. Зогсоох функц буцаана. */
+/** Connection with reconnect retry. Returns a stop function. */
 export function connect(handlers: SocketHandlers, url = socketUrl()): () => void {
   let socket: WebSocket | null = null;
   let attempt = 0;
@@ -44,7 +44,7 @@ export function connect(handlers: SocketHandlers, url = socketUrl()): () => void
       try {
         handlers.onMessage(JSON.parse(event.data as string) as BusMessage);
       } catch {
-        // Задлагдахгүй мессеж нь UI-г унагаахгүй — дараагийнх ирнэ.
+        // An unparseable message doesn't crash the UI — the next one arrives.
       }
     };
     socket.onclose = () => {

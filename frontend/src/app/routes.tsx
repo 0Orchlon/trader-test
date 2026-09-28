@@ -1,4 +1,4 @@
-/** Route-ын тодорхойлолт (LLD §16.1). Найман дэлгэц, нэг shell. */
+/** Route definitions (LLD §16.1). Eight screens, one shell. */
 import type { RouteObject } from 'react-router-dom';
 
 import { AppShell } from './AppShell';

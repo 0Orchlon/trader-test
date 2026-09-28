@@ -192,6 +192,43 @@ async def test_single_origin_symbol_is_not_flagged_mixed(client, broker, seeded_
     assert all(row["origin_mixed"] is False for row in rows)
 
 
+async def test_a_symbol_whose_local_orders_net_flat_is_external(client, broker, db_session):
+    """Хаагдсан локал арилжаа ирээдүйн позицийг эзэмшихгүй (LLD D-1)."""
+    from datetime import timedelta
+
+    from app import models
+    from app.util.time import now_utc
+
+    base = now_utc()
+    db_session.add_all(
+        [
+            models.Order(
+                client_order_id=f"p3-flat-{side}",
+                broker_order_id=f"brk-flat-{side}",
+                symbol="BTC/USD",
+                side=side,
+                qty=Decimal("1"),
+                filled_qty=Decimal("1"),
+                order_type="market",
+                time_in_force="gtc",
+                status="filled",
+                origin="research_agent",
+                origin_detail="local-ollama/qwen3:4b-instruct",
+                risk_evaluation={"decision": "APPROVE"},
+                mode="paper",
+                submitted_at=base + timedelta(minutes=minute),
+                filled_at=base + timedelta(minutes=minute),
+            )
+            for minute, side in enumerate(("buy", "sell"))
+        ]
+    )
+    await db_session.commit()
+    broker.positions = [position("BTCUSD", "0.5", "30000.00")]
+
+    body = (await client.get("/api/v1/positions")).json()
+    assert body["positions"][0]["origin"] == "external"
+
+
 async def test_positions_flag_mixed_origin(client, broker, db_session):
     await _mixed_fill(db_session)
     broker.positions = [position("AAPL", "15", "3330.00")]
@@ -228,3 +265,102 @@ async def test_get_quote_unknown_symbol_is_a_problem_not_a_guess(client, broker)
     response = await client.get("/api/v1/market/quote/NOPE")
     assert response.status_code == 503
     assert response.json()["code"] == "broker_unavailable"
+
+
+# --- T-99: дэлгэцийн P&L нь модельд үзүүлсэн ЯГ ТЭР тоо ---
+
+
+async def _closed_pair(db_session):
+    """Хоёр хаагдсан order: +17.50 ба -12.50 → цэвэр +5.00."""
+    from datetime import timedelta
+
+    from app import models
+    from app.util.time import now_utc
+
+    base = now_utc()
+    db_session.add_all(
+        [
+            models.Order(
+                client_order_id=f"p3-closed-{i}",
+                broker_order_id=f"brk-closed-{i}",
+                symbol="AAPL",
+                side="sell",
+                qty=Decimal("2"),
+                filled_qty=Decimal("2"),
+                order_type="market",
+                time_in_force="day",
+                status="filled",
+                origin="research_agent",
+                origin_detail=detail,
+                risk_evaluation={"decision": "APPROVE"},
+                mode="paper",
+                submitted_at=base + timedelta(minutes=i),
+                filled_at=base + timedelta(minutes=i),
+                realized_pl=pl,
+            )
+            for i, (pl, detail) in enumerate(
+                ((Decimal("17.50"), "exit:take_profit"), (Decimal("-12.50"), "exit:stop_loss"))
+            )
+        ]
+    )
+    await db_session.commit()
+
+
+async def test_performance_reports_the_same_net_the_prompt_was_shown(client, db_session):
+    from app.agents.runner import closed_trade_stats
+
+    await _closed_pair(db_session)
+    stats = await closed_trade_stats(db_session)
+    expected = sum(s["net"] for s in stats["per_symbol"])
+
+    body = (await client.get("/api/v1/performance")).json()
+    assert body["net"] == f"{expected:.2f}" == "5.00"
+    assert body["per_symbol"] == [
+        {"symbol": "AAPL", "trades": 2, "wins": 1, "losses": 1, "net": "5.00"}
+    ]
+    assert [r["reason"] for r in body["recent"]] == ["stop_loss", "take_profit"]
+
+
+async def test_performance_is_empty_not_zero_shaped_without_closed_trades(client, seeded_orders):
+    """Нээлттэй order нь хаагдсан арилжаа БИШ — нэгтгэлд орохгүй."""
+    body = (await client.get("/api/v1/performance")).json()
+    assert body["per_symbol"] == []
+    assert body["recent"] == []
+    assert body["net"] == "0.00"
+    assert body["total"] == {"trades": 0, "net": "0.00"}
+
+
+async def test_total_counts_every_close_not_just_the_prompt_window(client, db_session):
+    """`net`/`per_symbol` нь prompt-ийн 20 мөрийн цонх. Самбар тэр цонхоор
+    гарвал 21 дэх хаалтаас эхлэн хөшиж, хаалт бүр нэгийг чимээгүй түлхэнэ."""
+    from datetime import timedelta
+
+    from app import models
+    from app.util.time import now_utc
+
+    base = now_utc()
+    db_session.add_all(
+        [
+            models.Order(
+                client_order_id=f"p3-many-{i}",
+                symbol="AAPL",
+                side="sell",
+                qty=Decimal("1"),
+                order_type="market",
+                time_in_force="day",
+                status="filled",
+                origin="research_agent",
+                risk_evaluation={"decision": "APPROVE"},
+                mode="paper",
+                submitted_at=base + timedelta(minutes=i),
+                filled_at=base + timedelta(minutes=i),
+                realized_pl=Decimal("1.00"),
+            )
+            for i in range(21)
+        ]
+    )
+    await db_session.commit()
+
+    body = (await client.get("/api/v1/performance")).json()
+    assert body["net"] == "20.00"  # цонх
+    assert body["total"] == {"trades": 21, "net": "21.00"}  # бүх түүх

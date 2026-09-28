@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -42,6 +43,7 @@ class ExecutionAgent:
         actor: str = "system:execution",
         idempotency_key: str | None = None,
         request_hash: str | None = None,
+        entry_price: Decimal | None = None,
     ) -> models.Order:
         existing = (
             await self.session.execute(
@@ -71,6 +73,9 @@ class ExecutionAgent:
             mode=self.mode,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
+            # Хаалтын мөрд оролтын үнэ — `ingest` fill дээр realized_pl бодоход
+            # хэрэгтэй. Broker-ийн round trip-ЭЭС ӨМНӨ commit хийгдэх ёстой.
+            entry_price=entry_price,
             submitted_at=now_utc(),
         )
         self.session.add(row)

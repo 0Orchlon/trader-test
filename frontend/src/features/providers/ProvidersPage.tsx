@@ -1,10 +1,10 @@
 /**
  * Provider Switcher (T-33, LLD §16.6, FR-8, AC-10).
  *
- * Role тус бүрийн идэвхтэй provider, эрүүл мэнд, унших/бичих эрх.
- * Солих нь **restart БАЙХГҮЙ** — backend талд лавлагааг дахин оноох ганц
- * заалт. Нислэг дунд байгаа tool call хуучин provider-ээр дуусаж,
- * ХУУЧНААР нь бүртгэгдэнэ (AC-11).
+ * Shows each role's active provider, health, and read/write permission.
+ * Switching has **NO restart** — it's a single reference reassignment on
+ * the backend. An in-flight tool call finishes on the OLD provider and
+ * is recorded under the OLD one (AC-11).
  */
 import { useState } from 'react';
 import {
@@ -20,10 +20,11 @@ import {
   Text,
   Title,
 } from '@mantine/core';
-import { IconAlertTriangle, IconRefresh } from '@tabler/icons-react';
+import { IconAlertTriangle, IconPlugConnected, IconRefresh } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api } from '@/lib/api';
+import { Num } from '@/components/Num';
 
 export function ProvidersPage() {
   const queryClient = useQueryClient();
@@ -39,7 +40,7 @@ export function ProvidersPage() {
       setError(null);
       setNote(
         `${result.previous_provider_id} → ${result.new_provider_id}. ` +
-          `Нислэг дунд байсан ${result.in_flight_calls} дуудалт ХУУЧНААР дуусна.`,
+          `${result.in_flight_calls} in-flight calls will finish on the OLD provider.`,
       );
       void queryClient.invalidateQueries({ queryKey: ['providers'] });
     },
@@ -58,22 +59,26 @@ export function ProvidersPage() {
 
   return (
     <Stack gap="md">
-      <Title order={3}>AI provider</Title>
+      <Group gap="xs">
+        <IconPlugConnected size={20} color="var(--mantine-color-brand-5)" />
+        <Title order={3}>AI provider</Title>
+      </Group>
 
       {noWritableHealthy ? (
         <Alert color="orange" icon={<IconAlertTriangle size={18} />} data-testid="no-writable">
-          Санал гаргах чадвартай эрүүл provider БАЙХГҮЙ. Шинэ санал гарахгүй — байгаа
-          позиц, order хөндөгдөхгүй. Risk, зогсоолт, circuit breaker хэвийн ажиллана.
+          No healthy provider capable of proposing trades. No new proposals will be
+          made — existing positions and orders are unaffected. Risk, the kill switch,
+          and the circuit breaker keep working normally.
         </Alert>
       ) : null}
 
       <Card withBorder padding="md">
         <Group align="flex-end" gap="sm">
           <Select
-            label="research role-ийн provider"
+            label="Provider for the research role"
             data={providers.map((p) => ({
               value: p.id,
-              label: `${p.id} · ${p.model}${p.read_only ? ' (зөвхөн унших)' : ''}`,
+              label: `${p.id} · ${p.model}${p.read_only ? ' (read-only)' : ''}`,
               disabled: !p.healthy,
             }))}
             value={selected ?? active['research'] ?? null}
@@ -87,12 +92,12 @@ export function ProvidersPage() {
             data-testid="provider-switch"
             onClick={() => selected && swap.mutate(selected)}
           >
-            Солих
+            Switch
           </Button>
         </Group>
         <Text size="xs" c="dimmed" mt="xs">
-          Солилт нь систем дахин ачаалахгүй. Нэг харилцан яриа дунд provider солигдохгүй —
-          солилт нь ДАРААГИЙН session-д хүчинтэй.
+          Switching does not restart the system. A provider never changes mid-conversation
+          — a switch takes effect on the NEXT session.
         </Text>
       </Card>
 
@@ -113,29 +118,31 @@ export function ProvidersPage() {
             <Table.Tr>
               <Table.Th>ID</Table.Th>
               <Table.Th>Vendor</Table.Th>
-              <Table.Th>Модель</Table.Th>
-              <Table.Th>Транспорт</Table.Th>
-              <Table.Th>Эрүүл</Table.Th>
-              <Table.Th>Эрх</Table.Th>
-              <Table.Th>Сүүлийн алдаа</Table.Th>
-              <Table.Th>Идэвхтэй</Table.Th>
+              <Table.Th>Model</Table.Th>
+              <Table.Th>Transport</Table.Th>
+              <Table.Th>Healthy</Table.Th>
+              <Table.Th>Permission</Table.Th>
+              <Table.Th>Last error</Table.Th>
+              <Table.Th>Active</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {providers.map((p) => (
               <Table.Tr key={p.id} data-testid="provider-row" data-id={p.id}>
-                <Table.Td fw={600}>{p.id}</Table.Td>
+                <Table.Td>
+                  <Num fw={600}>{p.id}</Num>
+                </Table.Td>
                 <Table.Td>{p.vendor}</Table.Td>
                 <Table.Td>{p.model}</Table.Td>
                 <Table.Td>{p.transport}</Table.Td>
                 <Table.Td>
                   <Badge color={p.healthy ? 'green' : 'red'} variant="light">
-                    {p.healthy ? 'эрүүл' : 'унасан'}
+                    {p.healthy ? 'healthy' : 'down'}
                   </Badge>
                 </Table.Td>
                 <Table.Td>
                   <Badge color={p.read_only ? 'gray' : 'blue'} variant="light">
-                    {p.read_only ? 'зөвхөн унших' : 'санал гаргана'}
+                    {p.read_only ? 'read-only' : 'can propose'}
                   </Badge>
                 </Table.Td>
                 <Table.Td>

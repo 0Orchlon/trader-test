@@ -57,6 +57,9 @@ class FakeBroker:
         self.account = account or DEFAULT_ACCOUNT
         self.positions = positions or []
         self.open_orders = open_orders or []
+        #: ТЕРМИНАЛ order-ууд (filled/canceled/…) — Alpaca-ийн `status=open`
+        #: жагсаалтад БАЙХГҮЙ ч `by_client_order_id`-аар олдоно.
+        self.terminal_orders: list[BrokerOrder] = []
         self.quotes = quotes or {}
         self.source = source
         self.submitted: list[ValidatedOrder] = []
@@ -99,6 +102,19 @@ class FakeBroker:
     async def get_open_orders(self) -> Envelope[list[BrokerOrder]]:
         self.calls.append("get_open_orders")
         return self._envelope(list(self.open_orders))
+
+    async def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None:
+        self.calls.append(f"get_order_by_client_id:{client_order_id}")
+        if not self.reachable:
+            raise BrokerUnavailable("тестийн broker унтраалттай")
+        return next(
+            (
+                o
+                for o in [*self.open_orders, *self.terminal_orders]
+                if o.client_order_id == client_order_id
+            ),
+            None,
+        )
 
     async def get_quote(self, symbol: str) -> Envelope[Quote]:
         self.calls.append(f"get_quote:{symbol}")

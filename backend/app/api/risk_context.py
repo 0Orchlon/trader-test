@@ -17,10 +17,31 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from app.api.attribution import _normalize
 from app.broker.models import BrokerUnavailable, SystemState
 from app.risk.agent import RiskContext
 from app.risk.limits import RiskLimits
 from app.util.time import now_utc
+
+
+def _with_order_form_symbol(position, watch: dict[str, str]):
+    """Alpaca-ийн `/v2/positions` нь crypto-с `/`-г хасдаг (`BTC/USD` ->
+    `BTCUSD`), харин order/quote тал `/`-тэй хэвээр (T-99, эмпирик
+    ажиглалт — `exits.py`/`attribution.py`-д аль хэдийн баримтжуулсан).
+
+    Фрозен `risk/rules.py`-ийн `position_for` нь `p.symbol == req.symbol`
+    ГАНЦХАН тэгш байдлаар харьцуулна — normalize ХИЙХГҮЙ. Тиймээс crypto
+    позиц дээр `SOL/USD` гэсэн (slash-тэй) хаах order ирэхэд `position_for`
+    хэзээ ч ОЛОХГҮЙ, `increases_exposure(None, req)` "шинэ symbol" гэж
+    үзээд ЭСРЭГЭЭР bodно: бодит ХААЛТ (exposure БАГАСГАХ) ёстойг шинэ
+    позиц НЭЭХ (exposure НЭМЭХ) мэт тооцоод r6/r7 буруу REJECT/inflate
+    хийнэ. Фрозен файлыг ӨӨРЧЛӨХ БИШ — эндээс (context угсрах цэгээс)
+    л position.symbol-ыг order-ын hэлбэрт (`settings.RESEARCH_SYMBOLS`-ийн
+    slash-тэй бичлэг) буцааж тааруулна."""
+    mapped = watch.get(_normalize(position.symbol))
+    if mapped is None or mapped == position.symbol:
+        return position
+    return replace(position, symbol=mapped)
 
 
 async def build(
@@ -45,9 +66,10 @@ async def build(
                     account.last_equity - withdrawn if account.last_equity is not None else None
                 ),
             )
+    watch = {_normalize(s): s for s in settings.research_symbols}
     return RiskContext(
         account=account,
-        positions=list(positions_envelope.data),
+        positions=[_with_order_form_symbol(p, watch) for p in positions_envelope.data],
         quote=quote,
         day_trade_count=account.day_trade_count,
         system_state=state,

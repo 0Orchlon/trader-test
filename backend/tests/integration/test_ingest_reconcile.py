@@ -195,7 +195,7 @@ def test_compare_finds_nothing_when_both_sides_agree(seeded_orders):
     remote = broker_order("p3-seed-manual", symbol="MSFT")
     local = [o for o in seeded_orders if o.client_order_id == "p3-seed-manual"]
     local[0].filled_qty = remote.filled_qty
-    assert _compare(local, [remote]) == []
+    assert _compare(local, [remote], {"p3-seed-manual": remote}) == []
 
 
 async def test_reconcile_with_no_drift_writes_nothing(db_session, broker, settings, seeded_orders):
@@ -249,6 +249,101 @@ async def test_reconcile_logs_every_drift(db_session, broker, settings, seeded_o
         )
     ).scalars().one()
     assert row.payload["drift_count"] == 1
+
+
+async def test_a_failed_row_that_filled_at_the_broker_is_repaired(
+    db_session, broker, settings, seeded_orders
+):
+    """4-р тойргийн үндсэн шалтгаан A.
+
+    `submit_order` timeout → локал мөр `failed`, filled_qty 0. Order нь
+    Alpaca дээр БИЕЛСЭН. `filled` нь терминал тул `GET /v2/orders?status=open`
+    -д ХЭЗЭЭ Ч харагдахгүй — тулгалт зөвхөн тэр жагсаалтыг хардаг байсан
+    учраас энэ orphan бүтцээрээ үл үзэгдэж байв.
+    """
+    from dataclasses import replace
+
+    row = [o for o in seeded_orders if o.client_order_id == "p3-seed-manual"][0]
+    row.status = OrderStatus.FAILED.value
+    row.filled_qty = Decimal("0")
+    await db_session.commit()
+
+    broker.open_orders = []
+    broker.terminal_orders = [
+        replace(
+            broker_order("p3-seed-manual", symbol="MSFT"),
+            status=OrderStatus.FILLED,
+            filled_qty=Decimal("12"),
+            filled_at=now_utc(),
+        )
+    ]
+
+    report = await reconcile(db_session, broker, settings=settings)
+    assert [d.kind for d in report.drifts] == ["status_mismatch"]
+    await db_session.refresh(row)
+    assert (row.status, row.filled_qty) == ("filled", Decimal("12"))
+    assert row.filled_at is not None
+
+
+async def test_a_fill_missed_by_the_websocket_is_adopted_from_the_broker(
+    db_session, broker, settings, seeded_orders
+):
+    """4-р тойргийн үндсэн шалтгаан B.
+
+    `trade_updates` нь салсан хугацааны үйл явдлыг ДАХИН ТОГЛУУЛАХГҮЙ тул
+    дахин холболтын цонхонд ирсэн fill алга болно. Мөр `accepted`/0 хэвээр
+    үлдвэл цэвэр bielelt үүрд буруу. Тулгалт нь илрүүлээд орхихгүй — засна.
+    """
+    from dataclasses import replace
+
+    row = [o for o in seeded_orders if o.client_order_id == "p3-seed-manual"][0]
+    broker.open_orders = []
+    broker.terminal_orders = [
+        replace(
+            broker_order("p3-seed-manual", symbol="MSFT"),
+            status=OrderStatus.FILLED,
+            filled_qty=Decimal("12"),
+        )
+    ]
+
+    report = await reconcile(db_session, broker, settings=settings)
+    assert [d.kind for d in report.drifts] == ["status_mismatch"]
+    await db_session.refresh(row)
+    assert (row.status, row.filled_qty) == ("filled", Decimal("12"))
+
+
+async def test_a_row_the_broker_never_saw_is_closed_not_left_open(
+    db_session, broker, settings, seeded_orders
+):
+    """`missing_at_broker` нь ИЛРҮҮЛЭЭД ОРХИГДОХГҮЙ.
+
+    Alpaca «ийм order байхгүй» гэж хариулсан нь ч үнэн: тэр мөр хэзээ ч
+    биелэхгүй. `accepted` хэвээр үлдвэл exits тэр symbol-ыг үүрд хаахгүй.
+    """
+    row = [o for o in seeded_orders if o.client_order_id == "p3-seed-manual"][0]
+    broker.open_orders = []
+
+    report = await reconcile(db_session, broker, settings=settings)
+    assert [d.kind for d in report.drifts] == ["missing_at_broker"]
+    await db_session.refresh(row)
+    assert row.status == "failed"
+    assert row.failure_reason
+
+
+async def test_a_failed_row_absent_everywhere_is_not_a_drift(
+    db_session, broker, settings, seeded_orders
+):
+    """3-р тойргийн хамгаалалт хэвээр: хүрээгүй submit нь ХҮЛЭЭГДСЭН байдал.
+
+    Түүнийг өдөр бүр зөрүү гэж тоолбол `RECONCILE_DRIFT_LIMIT` худлаар унана.
+    """
+    row = [o for o in seeded_orders if o.client_order_id == "p3-seed-manual"][0]
+    row.status = OrderStatus.FAILED.value
+    await db_session.commit()
+    broker.open_orders = []
+
+    report = await reconcile(db_session, broker, settings=settings)
+    assert report.drifts == []
 
 
 async def test_an_order_unknown_locally_is_a_drift(db_session, broker, settings):

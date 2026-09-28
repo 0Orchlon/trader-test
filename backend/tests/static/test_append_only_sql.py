@@ -34,6 +34,13 @@ def test_mutations_raise():
     assert "RAISE EXCEPTION" in STATEMENTS
 
 
+@pytest.mark.parametrize("column", ("entry_price", "realized_pl"))
+def test_existing_table_gets_new_columns(column: str):
+    """`create_all` нь байгаа хүснэгтэд багана нэмэхгүй — ALTER энд байх ёстой."""
+    needle = f"ALTER TABLE ORDERS ADD COLUMN IF NOT EXISTS {column.upper()} NUMERIC(20, 8)"
+    assert needle in STATEMENTS, f"orders.{column}: ALTER алга — prod дээр багана үүсэхгүй"
+
+
 @pytest.mark.parametrize("table", APPEND_ONLY_TABLES)
 @pytest.mark.parametrize("operation", ("UPDATE", "DELETE", "TRUNCATE"))
 def test_each_mutation_is_refused_by_a_trigger(table: str, operation: str):

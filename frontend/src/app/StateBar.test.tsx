@@ -1,11 +1,11 @@
 /**
- * T-29 (656) · T-51 (676) — горимын заалт ба гурван товч (AC-20, AC-38).
+ * T-29 (656) · T-51 (676) — mode indicator and three buttons (AC-20, AC-38).
  *
- * Голууд:
- * - Горим бүр өөр шошго; тодорхойгүй байх нь `paper` гэсэн үг БИШ.
- * - `Зогсоо` нь асуулт БАЙХГҮЙГЭЭР ажиллана.
- * - `Унтраах бэлтгэл` ба `Идэвхжүүл` нь ӨӨР асуулттай.
- * - `Идэвхжүүл`-ийн текст нь backend-ийн `confirmation.prompt`-оос.
+ * Core points:
+ * - Every mode has a distinct label; unknown does NOT mean `paper`.
+ * - `Kill switch` fires with NO confirmation.
+ * - `Wind down` and `Activate` have DIFFERENT confirmation behavior.
+ * - `Activate`'s prompt text comes from the backend's `confirmation.prompt`.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -24,56 +24,56 @@ import {
 } from '@/test/fixtures';
 
 describe('ModeBanner (AC-20)', () => {
-  it('paper горимыг ил тэмдэглэнэ', () => {
+  it('marks paper mode visibly', () => {
     renderWithProviders(<ModeBanner source="alpaca_paper" />);
     expect(screen.getByTestId('mode-banner')).toHaveAttribute('data-source', 'alpaca_paper');
-    expect(screen.getByText(/PAPER — хуурамч мөнгө/)).toBeInTheDocument();
+    expect(screen.getByText(/PAPER — fake money/)).toBeInTheDocument();
   });
 
-  it('live горимыг ӨӨР текст, өөр өнгөөр', () => {
+  it('shows live mode with DIFFERENT text and color', () => {
     renderWithProviders(<ModeBanner source="alpaca_live" />);
-    expect(screen.getByText(/LIVE — БОДИТ МӨНГӨ/)).toBeInTheDocument();
+    expect(screen.getByText(/LIVE — REAL MONEY/)).toBeInTheDocument();
   });
 
-  it('backtest горимыг тусад нь', () => {
+  it('separates backtest mode', () => {
     renderWithProviders(<ModeBanner source="backtest" />);
-    expect(screen.getByText(/BACKTEST — түүхэн өгөгдөл/)).toBeInTheDocument();
+    expect(screen.getByText(/BACKTEST — historical data/)).toBeInTheDocument();
   });
 
-  it('мэдэгдэхгүй горимыг paper гэж ТААМАГЛАХГҮЙ', () => {
+  it('does NOT assume unknown mode is paper', () => {
     renderWithProviders(<ModeBanner source={undefined} />);
     expect(screen.getByTestId('mode-banner')).toHaveAttribute('data-source', 'unknown');
-    expect(screen.getByText(/ГОРИМ ТОДОРХОЙГҮЙ/)).toBeInTheDocument();
+    expect(screen.getByText(/MODE UNKNOWN/)).toBeInTheDocument();
   });
 
-  it('live горим нь source-оос ирнэ, таамаглалаас биш', () => {
+  it('reads live mode from source, not a guess', () => {
     renderWithProviders(<ModeBanner source={liveState.source} />);
     expect(screen.getByTestId('mode-banner')).toHaveAttribute('data-source', 'alpaca_live');
   });
 });
 
 describe('StateBar (AC-38)', () => {
-  it('идэвхтэй үед Идэвхжүүл товч идэвхгүй', () => {
+  it('disables Activate while active', () => {
     renderWithProviders(<StateBar state={systemState} />);
-    expect(screen.getByTestId('state-badge')).toHaveTextContent('ИДЭВХТЭЙ');
+    expect(screen.getByTestId('state-badge')).toHaveTextContent('ACTIVE');
     expect(screen.getByTestId('activate')).toBeDisabled();
     expect(screen.getByTestId('wind-down')).toBeEnabled();
     expect(screen.getByTestId('kill-switch')).toBeEnabled();
   });
 
-  it('зогссон үед шалтгаан ил, wind-down идэвхгүй', () => {
+  it('shows the reason while halted, disables wind-down', () => {
     renderWithProviders(<StateBar state={haltedState} />);
-    expect(screen.getByTestId('halt-reason')).toHaveTextContent('Өдрийн алдагдлын хязгаар давсан');
+    expect(screen.getByTestId('halt-reason')).toHaveTextContent('Daily loss limit exceeded');
     expect(screen.getByTestId('wind-down')).toBeDisabled();
     expect(screen.getByTestId('activate')).toBeEnabled();
   });
 
-  it('wind-down үед үлдсэн хугацааны тоолуур', () => {
+  it('shows a countdown of remaining time while winding down', () => {
     renderWithProviders(<StateBar state={windingDownState} />);
     expect(screen.getByTestId('wind-down-countdown')).toHaveTextContent('12:34');
   });
 
-  it('Зогсоо нь асуулт БАЙХГҮЙГЭЭР шууд ажиллана', async () => {
+  it('kill switch fires immediately with NO confirmation', async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response(JSON.stringify(haltedState), { status: 200 }),
@@ -89,9 +89,9 @@ describe('StateBar (AC-38)', () => {
     vi.unstubAllGlobals();
   });
 
-  it('Унтраах бэлтгэл нь асуулт БАЙХГҮЙГЭЭР шууд ажиллана (N-6)', async () => {
-    // Эрсдэл БУУРУУЛАХ үйлдэлд баталгаажуулалт БАЙХГҮЙ — §8.4-ийн гурван
-    // үйлдэлд wind-down ороогүй. Ингэснээр UI-д бодлогын текст үлдэхгүй.
+  it('wind down fires immediately with NO confirmation (N-6)', async () => {
+    // No confirmation on a risk-REDUCING action — wind-down is not one of
+    // §8.4's three actions. This keeps policy text out of the UI.
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response(JSON.stringify(systemState), { status: 200 }),
@@ -107,16 +107,16 @@ describe('StateBar (AC-38)', () => {
     vi.unstubAllGlobals();
   });
 
-  it('Идэвхжүүлэхийн асуулт нь backend-ийн prompt-оос ирнэ', async () => {
+  it('activate prompt comes from the backend', async () => {
     const problem = {
       type: 'https://personal-3.invalid/problems/confirmation_required',
-      title: 'Баталгаажуулалт шаардлагатай',
+      title: 'Confirmation required',
       status: 409,
       code: 'confirmation_required',
-      detail: 'ил баталгаажуулалт шаардлагатай',
+      detail: 'explicit confirmation required',
       confirmation: {
         token: 'tok-1',
-        prompt: 'Системийг ИДЭВХЖҮҮЛЭХ үү? Agent болон алгоритм арилжаагаа дахин эхлүүлнэ.',
+        prompt: 'ACTIVATE the system? Agent and algorithmic trading will resume.',
         expires_at: '2026-09-16T14:35:00Z',
       },
     };
@@ -129,20 +129,20 @@ describe('StateBar (AC-38)', () => {
     await userEvent.click(screen.getByTestId('activate'));
 
     await waitFor(() =>
-      expect(screen.getByTestId('confirm-prompt')).toHaveTextContent(/ИДЭВХЖҮҮЛЭХ үү/),
+      expect(screen.getByTestId('confirm-prompt')).toHaveTextContent(/ACTIVATE the system/),
     );
-    // Текст нь UI-д хатуу кодлогдоогүй — ХОЁР эх үүсэхгүй (LLD §16.3).
-    expect(screen.getByTestId('confirm-prompt')).not.toHaveTextContent(/унтраах/i);
+    // Text is not hard-coded in the UI — no second source of truth (LLD §16.3).
+    expect(screen.getByTestId('confirm-prompt')).not.toHaveTextContent(/wind down/i);
     vi.unstubAllGlobals();
   });
 
-  it('идэвхжүүлэхийн өмнө breaker-ийн ОДООГИЙН метрик харагдана (AC-37)', async () => {
+  it("shows breaker's CURRENT metrics before activating (AC-37)", async () => {
     const problem = {
       status: 409,
       code: 'confirmation_required',
       title: 'x',
       type: 'x',
-      confirmation: { token: 't', prompt: 'Идэвхжүүлэх үү?', expires_at: 'x' },
+      confirmation: { token: 't', prompt: 'Activate?', expires_at: 'x' },
     };
     vi.stubGlobal(
       'fetch',
@@ -157,13 +157,13 @@ describe('StateBar (AC-38)', () => {
     vi.unstubAllGlobals();
   });
 
-  it('хэмжигдээгүй метрик нь «хэвийн» гэж харагдахгүй (B-1)', async () => {
+  it('an unmeasured metric is never shown as "normal" (B-1)', async () => {
     const problem = {
       status: 409,
       code: 'confirmation_required',
       title: 'x',
       type: 'x',
-      confirmation: { token: 't', prompt: 'Идэвхжүүлэх үү?', expires_at: 'x' },
+      confirmation: { token: 't', prompt: 'Activate?', expires_at: 'x' },
     };
     vi.stubGlobal(
       'fetch',
@@ -175,16 +175,16 @@ describe('StateBar (AC-38)', () => {
 
     await waitFor(() => expect(screen.getByTestId('breaker-metrics')).toBeInTheDocument());
     const row = screen.getByTestId('breaker-metric-api_error_rate');
-    expect(row).toHaveTextContent('ХЭМЖИГДЭЭГҮЙ');
+    expect(row).toHaveTextContent('UNMEASURED');
     expect(row).not.toHaveTextContent('0.0000');
     vi.unstubAllGlobals();
   });
 });
 
 describe('StalenessBanner (AC-2)', () => {
-  it('сүүлийн мессежийн UTC хугацааг харуулна', () => {
+  it('shows the UTC time of the last message', () => {
     renderWithProviders(<StalenessBanner lastSeen="2026-09-16T14:29:58Z" />);
     expect(screen.getByTestId('staleness-banner')).toHaveTextContent('14:29:58Z');
-    expect(screen.getByTestId('staleness-banner')).toHaveTextContent(/ХУУЧИН байж болно/);
+    expect(screen.getByTestId('staleness-banner')).toHaveTextContent(/may be STALE/);
   });
 });

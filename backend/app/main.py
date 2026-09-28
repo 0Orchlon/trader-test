@@ -104,8 +104,10 @@ def create_app(
         routes_agents,
         routes_approvals,
         routes_capital,
+        routes_manual_take_profit,
         routes_orders,
         routes_read,
+        routes_research,
         routes_system,
         routes_tuning,
         ws,
@@ -119,6 +121,8 @@ def create_app(
         routes_agents,
         routes_tuning,
         routes_capital,
+        routes_research,
+        routes_manual_take_profit,
     ):
         app.include_router(module.router, prefix=API_PREFIX)
     app.include_router(ws.router)
@@ -168,7 +172,8 @@ async def _start_background(app: FastAPI):
     import asyncio
 
     from app.agents.router import follow_switches
-    from app.stream.ingest import StalenessMonitor, TradeUpdateIngestor
+    from app.broker.alpaca import is_crypto_symbol
+    from app.stream.ingest import MarketDataIngestor, StalenessMonitor, TradeUpdateIngestor
     from app.system.scheduler import build_scheduler
 
     monitor = StalenessMonitor(
@@ -178,8 +183,21 @@ async def _start_background(app: FastAPI):
     ingestor = TradeUpdateIngestor(
         app.state.sessionmaker, app.state.broker, app.state.bus, monitor
     )
+    # v1beta3/crypto/us нь ЗӨВХӨН crypto pair хүлээнэ авна — RESEARCH_SYMBOLS
+    # дунд stock ticker ч холилдсон байдаг тул шүүнэ (T-99, хувийн төсөл).
+    crypto_symbols = [s for s in app.state.settings.research_symbols if is_crypto_symbol(s)]
+    market_data = MarketDataIngestor(
+        app.state.sessionmaker,
+        app.state.broker,
+        app.state.bus,
+        monitor,
+        crypto_symbols,
+    )
     tasks = [
         asyncio.create_task(ingestor.run_forever()),
+        # 5 минутын REST poll-ыг хүлээхгүйгээр `ticks:{symbol}`-ыг шинэчилнэ
+        # (T-99, хувийн төсөл) — quote/bars REST хэвээр эх сурвалж хэвээр.
+        asyncio.create_task(market_data.run_forever()),
         # Өөр instance-ийн hot-swap-ыг сонсоно (U-3). Redis-гүй үед ч
         # ажиллана — өөрийн мессежийг дахин буулгах нь idempotent.
         asyncio.create_task(follow_switches(app.state.bus, app.state.provider_router)),

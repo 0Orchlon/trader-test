@@ -96,6 +96,31 @@ paths:
         "503":
           $ref: "#/components/responses/BrokerUnavailable"
 
+  /equity/history:
+    get:
+      operationId: getEquityHistory
+      tags: [read]
+      summary: Минут тутмын equity түүх (T-99, хувийн төсөл)
+      description: |
+        `snapshot_equity` job-ийн БОДИТ түүврүүд — интерполяци/тооцоолол
+        БАЙХГҮЙ. `/account`-ийн raw pass-through-ийг ХЭЗЭЭ Ч орлохгүй,
+        зөвхөн график зурахад зориулагдсан нэмэлт цуврал.
+      parameters:
+        - name: minutes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10080
+            default: 240
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EquityHistoryEnvelope"
+
   /market/quote/{symbol}:
     get:
       operationId: getQuote
@@ -119,6 +144,42 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QuoteEnvelope"
+        "503":
+          $ref: "#/components/responses/BrokerUnavailable"
+
+  /market/bars/{symbol}:
+    get:
+      operationId: getMarketBars
+      tags: [read]
+      summary: Candle chart-ийн bar-ууд (T-99, хувийн төсөл)
+      description: |
+        Байгаа bar-уудыг л буцаана — зохиосон bar ХЭЗЭЭ Ч биш. Стock болон
+        crypto pair (`BTC/USD`) хоёуланд ажиллана.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            default: 5Min
+        - name: minutes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10080
+            default: 240
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BarsEnvelope"
         "503":
           $ref: "#/components/responses/BrokerUnavailable"
 
@@ -230,6 +291,24 @@ paths:
           description: Цуцлах хүсэлт Alpaca руу илгээгдэв
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /performance:
+    get:
+      operationId: getPerformance
+      tags: [read]
+      summary: Хаагдсан арилжааны үр дүн (T-99, хувийн төсөл)
+      description: |
+        `net`/`per_symbol`/`recent` нь `realized_pl` бичигдсэн СҮҮЛИЙН 20
+        order-ийн нэгтгэл — prompt-ийн суралцах хэсэг ЯГ ЭНЭ эх функцээс
+        уншина. `total` нь тэр цонхгүй, БҮХ хаалтын нэгтгэл.
+        `/account`-ийн equity-г ХЭЗЭЭ Ч орлохгүй.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceEnvelope"
 
   /attribution:
     get:
@@ -519,6 +598,102 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
 
+  /research/status:
+    get:
+      operationId: getResearchStatus
+      tags: [agents]
+      summary: Дараагийн автоном research cycle хэзээ ажиллах (T-99, хувийн төсөл)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResearchStatusEnvelope"
+
+  /research/run-now:
+    post:
+      operationId: postResearchRunNow
+      tags: [agents]
+      summary: Дараагийн мөчлөгийг хүлээхгүй, ОДООХОН ажиллуулах (T-99, хувийн төсөл)
+      description: |
+        Fire-and-forget — LLM дуудлага секунд урьтдаг тул хариу шууд буцна.
+        Job-ийн хуваарийг эндээс дахин RESEARCH_INTERVAL_SECONDS-аар тооцно
+        (давхар ажиллахгүй).
+      responses:
+        "200":
+          description: OK
+
+  /research/watchlist:
+    put:
+      operationId: putResearchWatchlist
+      tags: [agents]
+      summary: Operator-ийн сонгосон дэд жагсаалт (T-99, хувийн төсөл)
+      description: |
+        `symbols` нь `available_symbols`-ийн дэд олонлог л байж болно — шинэ,
+        тохируулаагүй symbol зөвшөөрөгдөхгүй.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [symbols]
+              properties:
+                symbols:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: OK
+        "422":
+          description: Тохиргоонд байхгүй symbol эсвэл хоосон жагсаалт
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /manual-take-profit:
+    get:
+      operationId: getManualTakeProfit
+      tags: [agents]
+      summary: Гар позицийг ашигтай болмогц авто-хаах toggle-ийн төлөв (T-99, хувийн төсөл)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManualTakeProfitEnvelope"
+    put:
+      operationId: putManualTakeProfit
+      tags: [agents]
+      summary: Гар позицийг ашигтай болмогц авто-хаах toggle-ийг унтраах/асаах (T-99, хувийн төсөл)
+      description: |
+        Асаавал `exits.py`-ийн ХӨНДӨХГҮЙ (цэвэр `research_agent` бус) БҮХ
+        позицийг эерэг `unrealized_pl`-тай болмогц бүхэлд нь market order-оор
+        хаана. `Position.unrealized_pl`-ийг Alpaca-аас шууд ашигладаг тул
+        cost-basis дахин тооцоолол шаардахгүй.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManualTakeProfitEnvelope"
+
   /capital/withdraw:
     post:
       operationId: postCapitalWithdraw
@@ -563,6 +738,23 @@ paths:
                 $ref: "#/components/schemas/CapitalSummaryEnvelope"
         "503":
           $ref: "#/components/responses/BrokerUnavailable"
+
+  /capital/limits:
+    get:
+      operationId: getCapitalLimits
+      tags: [capital]
+      summary: Тохиргооны risk-ийн хязгаарууд (Settings-ийн шууд буулгалт)
+      description: |
+        `risk/rules.py`-ийн ТООЦООЛОЛ БИШ — зөвхөн Settings-ийн тоонуудыг
+        буулгана. Operator дэлгэц дээр "exposure хэдэн хувь үлдсэн бэ"
+        гэдгийг order илгээхгүйгээр харуулахад ашиглагдана.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapitalLimitsEnvelope"
 
   /system/state:
     get:
@@ -695,6 +887,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Problem"
+
+  /system/reconcile-now:
+    post:
+      operationId: postSystemReconcileNow
+      tags: [system]
+      summary: EOD reconcile-ийг гараар, хүлээлгүйгээр ажиллуулна (хувийн төсөл)
+      description: |
+        `reconcile_eod` cron job-той ЯГ ИЖИЛ логик — WS-ийн алдсан
+        fill-ийг маргааш хүртэл хүлээхгүйгээр одоо засна. Baталгаажуулалт
+        шаардахгүй: зөвхөн Alpaca-ийн мэдэгдсэн утгыг локал руу хуулна,
+        шинэ эрсдэл нэмэхгүй.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReconcileReportEnvelope"
 
 components:
 
@@ -909,6 +1119,117 @@ components:
             account:
               $ref: "#/components/schemas/Account"
 
+    EquityHistoryEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-18T14:30:00Z"
+          stale: false
+          system_state: active
+          points:
+            - ts: "2026-09-18T14:28:00Z"
+              equity: "100000.59"
+              cash: "70000.41"
+            - ts: "2026-09-18T14:29:00Z"
+              equity: "100012.30"
+              cash: "70000.41"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [points]
+          properties:
+            points:
+              type: array
+              items:
+                type: object
+                required: [ts, equity, cash]
+                properties:
+                  ts:
+                    $ref: "#/components/schemas/Utc"
+                  equity:
+                    $ref: "#/components/schemas/Money"
+                  cash:
+                    $ref: "#/components/schemas/Money"
+
+    PerformanceEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-18T14:30:00Z"
+          stale: false
+          system_state: active
+          net: "5.00"
+          total:
+            trades: 34
+            net: "118.25"
+          per_symbol:
+            - symbol: AAPL
+              trades: 2
+              wins: 1
+              losses: 1
+              net: "5.00"
+          recent:
+            - symbol: AAPL
+              side: sell
+              qty: "2"
+              realized_pl: "-12.50"
+              reason: stop_loss
+              filled_at: "2026-09-18T14:29:00Z"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [net, total, per_symbol, recent]
+          properties:
+            net:
+              $ref: "#/components/schemas/Money"
+            total:
+              type: object
+              description: |
+                БҮХ хаагдсан арилжааны нэгтгэл — хязгааргүй. `net`/`per_symbol`/
+                `recent` нь prompt-ийн цонх тул сүүлийн 20 мөрөөр таслагдсан;
+                самбарын оноо нь энэ талбараас уншина.
+              required: [trades, net]
+              properties:
+                trades:
+                  type: integer
+                net:
+                  $ref: "#/components/schemas/Money"
+            per_symbol:
+              type: array
+              items:
+                type: object
+                required: [symbol, trades, wins, losses, net]
+                properties:
+                  symbol:
+                    type: string
+                  trades:
+                    type: integer
+                  wins:
+                    type: integer
+                  losses:
+                    type: integer
+                  net:
+                    $ref: "#/components/schemas/Money"
+            recent:
+              type: array
+              items:
+                type: object
+                required: [symbol, side, qty, realized_pl, reason, filled_at]
+                properties:
+                  symbol:
+                    type: string
+                  side:
+                    type: string
+                  qty:
+                    $ref: "#/components/schemas/Quantity"
+                  realized_pl:
+                    $ref: "#/components/schemas/Money"
+                  reason:
+                    type: string
+                    description: "`origin_detail`-ийн `exit:` угтваргүй хэсэг; null бол `manual`."
+                  filled_at:
+                    oneOf:
+                      - $ref: "#/components/schemas/Utc"
+                      - type: "null"
+
     Quote:
       type: object
       required: [symbol, bid, ask, last, quote_ts]
@@ -923,6 +1244,35 @@ components:
           $ref: "#/components/schemas/Money"
         quote_ts:
           $ref: "#/components/schemas/Utc"
+
+    BarsEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [symbol, timeframe, bars]
+          properties:
+            symbol:
+              type: string
+            timeframe:
+              type: string
+            bars:
+              type: array
+              items:
+                type: object
+                required: [t, open, high, low, close, volume]
+                properties:
+                  t:
+                    $ref: "#/components/schemas/Utc"
+                  open:
+                    $ref: "#/components/schemas/Money"
+                  high:
+                    $ref: "#/components/schemas/Money"
+                  low:
+                    $ref: "#/components/schemas/Money"
+                  close:
+                    $ref: "#/components/schemas/Money"
+                  volume:
+                    type: integer
 
     QuoteEnvelope:
       examples:
@@ -1656,6 +2006,39 @@ components:
             switched_at:
               $ref: "#/components/schemas/Utc"
 
+    ResearchStatusEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [interval_seconds, running, symbols, available_symbols]
+          properties:
+            next_run_at:
+              type: [string, "null"]
+              description: RFC 3339 — job тохируулагдаагүй бол `null`.
+            interval_seconds:
+              type: integer
+            running:
+              type: boolean
+            symbols:
+              type: array
+              items:
+                type: string
+              description: Одоо ИДЭВХТЭЙ (operator-ийн сонгосон дэд олонлог).
+            available_symbols:
+              type: array
+              items:
+                type: string
+              description: Сонгож болох БҮХ symbol (`RESEARCH_SYMBOLS`).
+
+    ManualTakeProfitEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [enabled]
+          properties:
+            enabled:
+              type: boolean
+
     WithdrawRequest:
       type: object
       description: "`amount` эсвэл `pct`-ийн ЗӨВХӨН нэгийг өгнө."
@@ -1709,6 +2092,30 @@ components:
             total_withdrawn:
               $ref: "#/components/schemas/Money"
             effective_equity:
+              $ref: "#/components/schemas/Money"
+
+    CapitalLimitsEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-16T14:30:00Z"
+          stale: false
+          system_state: active
+          max_total_exposure_pct: "60"
+          max_position_pct: "10"
+          max_order_notional: "5000.00"
+          daily_loss_limit: "-2000.00"
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [max_total_exposure_pct, max_position_pct, max_order_notional, daily_loss_limit]
+          properties:
+            max_total_exposure_pct:
+              type: string
+            max_position_pct:
+              type: string
+            max_order_notional:
+              $ref: "#/components/schemas/Money"
+            daily_loss_limit:
               $ref: "#/components/schemas/Money"
 
     TuningEnvelope:
@@ -1877,6 +2284,47 @@ components:
                     type: string
                   tripped:
                     type: boolean
+
+    ReconcileReportEnvelope:
+      examples:
+        - source: alpaca_paper
+          as_of: "2026-09-28T07:43:00Z"
+          stale: false
+          system_state: active
+          drift_count: 4
+          drifts:
+            - kind: status_mismatch
+              client_order_id: mtp-XRPUSD-29838634
+              local: accepted
+              broker: filled
+          breaker_tripped: false
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [drift_count, drifts, breaker_tripped]
+          properties:
+            drift_count:
+              type: integer
+            drifts:
+              type: array
+              items:
+                type: object
+                required: [kind, client_order_id]
+                properties:
+                  kind:
+                    type: string
+                    enum: [status_mismatch, filled_qty_mismatch, missing_at_broker, unknown_locally]
+                  client_order_id:
+                    type: [string, "null"]
+                  local:
+                    type: [string, "null"]
+                  broker:
+                    type: [string, "null"]
+            breaker_tripped:
+              type: boolean
+              description: |
+                `true` — зөрүүний тоо `RECONCILE_DRIFT_LIMIT`-ээс давж,
+                систем `halted` руу шилжсэн.
 
     Problem:
       description: RFC 9457 Problem Details.

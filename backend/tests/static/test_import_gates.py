@@ -133,6 +133,28 @@ def test_r5_no_coverage_bypass_in_config():
     assert offenders == [], f"coverage тойрох тохиргоо (R-5): {offenders}"
 
 
+# --- R-6: `ValidatedOrder`-ыг ЗӨВХӨН гурван модуль үүсгэнэ (T-99) ---
+
+#: `risk.agent` нь Risk-ийн APPROVE салаа; `execution.exits` ба
+#: `execution.manual_take_profit` хоёулаа ЗӨВХӨН багасгах (reduce-only)
+#: хаалт — R1/R8 чиглэл ялгадаггүй бөгөөд `app/risk/*.py` хөлдөөсөн тул
+#: тэдгээрээр явбал stop-loss/take-profit хэзээ ч ажиллахгүй. Дөрөв дэх
+#: модуль нэмэгдвэл ЭНЭ тест унана.
+R6_ALLOWED = {"app.risk.agent", "app.execution.exits", "app.execution.manual_take_profit"}
+
+
+def test_r6_validated_order_is_constructed_in_exactly_two_modules():
+    builders = {
+        module
+        for module, tree in _modules()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ValidatedOrder"
+    }
+    assert builders == R6_ALLOWED, f"ValidatedOrder-ыг үүсгэх зөвшөөрөгдсөн бус модуль (R-6): {builders}"
+
+
 # --- хаалганууд ХООСОН биш гэдгийн нотолгоо ---
 
 

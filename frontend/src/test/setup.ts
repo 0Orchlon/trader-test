@@ -1,6 +1,26 @@
+import { vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 
-/** jsdom-д байхгүй ч Mantine шаарддаг browser API-ууд. */
+/**
+ * `lightweight-charts` needs a real canvas 2D context to draw — jsdom has
+ * none, and it schedules its first draw via `requestAnimationFrame`
+ * regardless of container width, so no width guard in the component avoids
+ * it. Mocked once here (same spirit as the `matchMedia`/`ResizeObserver`
+ * shims below) rather than worked around per test file.
+ */
+vi.mock('lightweight-charts', () => ({
+  createChart: () => ({
+    addSeries: () => ({ setData: () => {}, createPriceLine: () => {} }),
+    applyOptions: () => {},
+    timeScale: () => ({ fitContent: () => {} }),
+    remove: () => {},
+  }),
+  CandlestickSeries: {},
+  LineSeries: {},
+  LineStyle: { Solid: 0, Dotted: 1, Dashed: 2 },
+}));
+
+/** Browser APIs jsdom lacks but Mantine requires. */
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -30,7 +50,7 @@ if (!window.scrollTo) {
   window.scrollTo = (() => {}) as typeof window.scrollTo;
 }
 
-/** WebSocket — тест нь сүлжээнд ХЭЗЭЭ Ч хүрэхгүй. */
+/** WebSocket — tests NEVER touch the real network. */
 class FakeSocket {
   static instances: FakeSocket[] = [];
   onopen: (() => void) | null = null;

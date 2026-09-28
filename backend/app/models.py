@@ -81,6 +81,10 @@ class Order(Base):
     submitted_at: Mapped[datetime] = mapped_column(TS, nullable=False)
     filled_at: Mapped[datetime | None] = mapped_column(TS)
     failure_reason: Mapped[str | None] = mapped_column(Text)
+    #: Хаалтын order-т л утгатай: `null` нь «энэ order хаалт биш» (exit manager
+    #: бичнэ). Ингэснээр realized P/L нь хасалт болохоос сэргээн босголт биш.
+    entry_price: Mapped[Decimal | None] = mapped_column(NUM)
+    realized_pl: Mapped[Decimal | None] = mapped_column(NUM)
 
     __table_args__ = (
         CheckConstraint("side in ('buy','sell')", name="ck_orders_side"),
@@ -239,6 +243,32 @@ class Confirmation(Base):
     consumed_at: Mapped[datetime | None] = mapped_column(TS)
 
 
+class ResearchWatchlist(Base):
+    """Operator-ийн сонгосон дэд жагсаалт (T-99, хувийн төсөл).
+
+    Ганц мөр (`id=1`) — байхгүй эсвэл хоосон бол `settings.RESEARCH_SYMBOLS`-
+    ийн БҮХ жагсаалт л ашиглагдана (`app.agents.watchlist.get_active_symbols`).
+    """
+
+    __tablename__ = "research_watchlist"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    symbols: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(TS, nullable=False)
+
+
+class ManualTakeProfitConfig(Base):
+    """Гар (operator) позицийг ЯМАР Ч эерэг ашигтай болмогц автоматаар
+    хаах toggle (T-99, хувийн төсөл). Ганц мөр (`id=1`) — байхгүй бол
+    анхдагчаар УНТАРСАН (`app.execution.manual_take_profit.get_enabled`)."""
+
+    __tablename__ = "manual_take_profit_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(TS, nullable=False)
+
+
 class CapitalWithdrawal(Base):
     """Симуляцлагдсан profit-cut түүх (append-only, зөвхөн INSERT).
 
@@ -257,6 +287,24 @@ class CapitalWithdrawal(Base):
     created_at: Mapped[datetime] = mapped_column(TS, nullable=False)
 
     __table_args__ = (CheckConstraint("amount > 0", name="ck_capital_withdrawals_amount_positive"),)
+
+
+class EquitySnapshot(Base):
+    """Минут тутмын equity түүх (T-99, хувийн төсөл, LLD-д тусгаагүй).
+
+    v1-д «түүхэн equity-ийн эх сурвалж БАЙХГҮЙ» гэдгийг шийдэх ганц зам —
+    ӨӨРӨӨ түүврийг үүсгэх (`system/scheduler.py::snapshot_equity`). Alpaca-ийн
+    `equity`-ийг ТУХАЙ агшинд нь бичдэг, тооцоолол/интерполяци БАЙХГҮЙ.
+    """
+
+    __tablename__ = "equity_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(SAUuid, primary_key=True, default=uuid.uuid4)
+    equity: Mapped[Decimal] = mapped_column(NUM, nullable=False)
+    cash: Mapped[Decimal] = mapped_column(NUM, nullable=False)
+    ts: Mapped[datetime] = mapped_column(TS, nullable=False)
+
+    __table_args__ = (Index("ix_equity_snapshots_ts", "ts"),)
 
 
 class BreakerEvent(Base):

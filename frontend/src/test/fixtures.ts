@@ -1,9 +1,9 @@
 /**
- * Тестийн өгөгдөл — `contracts/openapi.yaml`-ийн жишээнүүдтэй нийцсэн.
+ * Test fixture data — matches `contracts/openapi.yaml`'s examples.
  *
- * Мөнгө нь fixed-point тэмдэгт мөр, timestamp нь UTC `Z`, позиц бүр
- * `origin`-той: тест нь гэрээний хэлбэрээс гажуудвал дэлгэц нь бодит
- * backend-тэй ажиллахгүй.
+ * Money is a fixed-point string, timestamps are UTC `Z`, every position
+ * has an `origin`: if a test drifts from the contract shape, the screen
+ * won't work against the real backend.
  */
 import type {
   AccountEnvelope,
@@ -44,12 +44,12 @@ export const systemState: SystemStateEnvelope = {
   ],
 };
 
-/** Broker хүрэхгүй: хоёр метрик хэмжигдээгүй (B-1). */
+/** Broker unreachable: two metrics unmeasured (B-1). */
 export const unmeasuredBreakerState: SystemStateEnvelope = {
   ...systemState,
   system_state: 'halted',
   state: 'halted',
-  reason: 'Broker хүрэхгүй',
+  reason: 'Broker unreachable',
   changed_by: 'circuit_breaker',
   breaker_metrics: [
     {
@@ -73,7 +73,7 @@ export const haltedState: SystemStateEnvelope = {
   ...systemState,
   system_state: 'halted',
   state: 'halted',
-  reason: 'Өдрийн алдагдлын хязгаар давсан',
+  reason: 'Daily loss limit exceeded',
   changed_by: 'circuit_breaker',
 };
 
@@ -81,7 +81,7 @@ export const windingDownState: SystemStateEnvelope = {
   ...systemState,
   system_state: 'winding_down',
   state: 'winding_down',
-  reason: 'Operator: удахгүй унтраана',
+  reason: 'Operator: shutting down soon',
   wind_down_deadline: '2026-09-16T14:45:00Z',
   seconds_remaining: 754,
 };
@@ -193,7 +193,7 @@ export const attribution: AttributionEnvelope = {
   ],
 };
 
-/** Холимог origin — нэг symbol хоёр картад (LLD §16.4). */
+/** Mixed origin — one symbol on two cards (LLD §16.4). */
 export const mixedAttribution: AttributionEnvelope = {
   ...ENVELOPE,
   groups: [
@@ -260,7 +260,7 @@ export const approvals: ApprovalsEnvelope = {
         order_type: 'limit',
         limit_price: '402.00',
         estimated_notional: '10050.00',
-        rationale: '20/50 EMA огтлолцол + эзлэхүүн 1.8 дахин их.',
+        rationale: '20/50 EMA crossover + volume 1.8x average.',
         grounded_in: ['11111111-2222-4333-8444-555555555555'],
         provider: 'claude-mcp',
         model: 'claude-opus-5',
@@ -352,6 +352,6 @@ export const health: Health = {
   status: 'ok',
   broker: { name: 'alpaca_paper', reachable: true },
   database: { name: 'postgres', reachable: true },
-  redis: { name: 'redis', reachable: false, detail: 'тохируулаагүй' },
+  redis: { name: 'redis', reachable: false, detail: 'not configured' },
   providers: [{ name: 'claude-mcp', reachable: true }],
 };

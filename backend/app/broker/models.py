@@ -149,6 +149,10 @@ class TradeUpdate:
     filled_avg_price: Money | None
     ts: Instant
     raw: dict
+    #: Энэ ганц биелэлтийн тоо/үнэ. Дээрх хоёр нь order-ийн ГҮЙЛГЭЭНИЙ ДҮН,
+    #: дундаж — fill мөр рүү бичвэл түүх гажна. Хуучин payload-д байхгүй.
+    fill_qty: Qty | None = None
+    fill_price: Money | None = None
 
 
 T = TypeVar("T")
